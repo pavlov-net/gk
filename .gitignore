@@ -17,4 +17,4 @@ wheels/
 .pytest_cache/
 .ruff_cache/
 .claude/
-.mcp.json
+!.claude/skills/

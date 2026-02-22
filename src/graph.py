@@ -5,27 +5,44 @@ import json
 import aiosqlite
 
 from src.config import Config
-from src.embeddings import embed_text, embed_texts, entity_embedding_text, serialize_embedding
+from src.embeddings import (
+    embed_text,
+    embed_texts,
+    entity_embedding_text,
+    relationship_embedding_text,
+    serialize_embedding,
+)
 from src.models import (
     SNIPPET_LENGTH,
     AddResult,
+    CentralityResult,
+    CentralityResults,
     DeleteResult,
     EntityDetail,
     EntityInput,
     EntityUpdate,
+    GraphStats,
+    MergeResult,
     NeighborEntity,
     NeighborResults,
     ObservationSummary,
     PathResult,
     PathResults,
     PathStep,
+    PyramidStats,
     RelationshipDetail,
     RelationshipInput,
     RelationshipResults,
     RelationshipUpdate,
+    Subgraph,
+    SubgraphEntity,
+    Timeline,
+    TimelineEntry,
     TypeCount,
     TypeCounts,
     UpdateResult,
+    ValidationIssue,
+    ValidationResults,
     utcnow,
 )
 
@@ -55,12 +72,23 @@ async def add_entities(
         try:
             props_json = json.dumps(entity.properties)
             cursor = await db.execute(
-                """INSERT INTO entities (name, type, properties, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?)
+                """INSERT INTO entities
+                   (name, type, properties, confidence, provenance, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(name, type) DO UPDATE SET
                        properties = excluded.properties,
+                       confidence = excluded.confidence,
+                       provenance = excluded.provenance,
                        updated_at = excluded.updated_at""",
-                (entity.name, entity.type, props_json, now, now),
+                (
+                    entity.name,
+                    entity.type,
+                    props_json,
+                    entity.confidence,
+                    entity.provenance,
+                    now,
+                    now,
+                ),
             )
             entity_id = cursor.lastrowid
 
@@ -76,12 +104,7 @@ async def add_entities(
 
             if entity_id is not None:
                 blob = serialize_embedding(embedding)
-                # Upsert into vec0: delete then insert (vec0 doesn't support ON CONFLICT)
-                await db.execute("DELETE FROM entity_embeddings WHERE entity_id = ?", (entity_id,))
-                await db.execute(
-                    "INSERT INTO entity_embeddings (entity_id, embedding) VALUES (?, ?)",
-                    (entity_id, blob),
-                )
+                await _upsert_embedding(db, "entity_embeddings", "entity_id", entity_id, blob)
                 result.added += 1
         except Exception as e:
             result.errors.append(f"Entity '{entity.name}' ({entity.type}): {e}")
@@ -101,7 +124,8 @@ async def update_entities(
     for update in updates:
         try:
             cursor = await db.execute(
-                "SELECT id, name, type, properties FROM entities WHERE name = ? AND type = ?",
+                """SELECT id, name, type, properties, confidence, provenance
+                   FROM entities WHERE name = ? AND type = ?""",
                 (update.name, update.type),
             )
             row = await cursor.fetchone()
@@ -117,12 +141,20 @@ async def update_entities(
                 if update.new_properties is not None
                 else row["properties"]
             )
+            new_confidence = (
+                update.new_confidence if update.new_confidence is not None else row["confidence"]
+            )
+            new_provenance = (
+                update.new_provenance if update.new_provenance is not None else row["provenance"]
+            )
 
             now = utcnow()
             await db.execute(
-                """UPDATE entities SET name = ?, type = ?, properties = ?, updated_at = ?
+                """UPDATE entities
+                   SET name = ?, type = ?, properties = ?,
+                       confidence = ?, provenance = ?, updated_at = ?
                    WHERE id = ?""",
-                (new_name, new_type, new_props, now, entity_id),
+                (new_name, new_type, new_props, new_confidence, new_provenance, now, entity_id),
             )
 
             # Re-embed if name, type, or properties changed
@@ -135,11 +167,7 @@ async def update_entities(
                 text = entity_embedding_text(new_name, new_type, props)
                 embedding = await embed_text(text, config)
                 blob = serialize_embedding(embedding)
-                await db.execute("DELETE FROM entity_embeddings WHERE entity_id = ?", (entity_id,))
-                await db.execute(
-                    "INSERT INTO entity_embeddings (entity_id, embedding) VALUES (?, ?)",
-                    (entity_id, blob),
-                )
+                await _upsert_embedding(db, "entity_embeddings", "entity_id", entity_id, blob)
 
             result.updated += 1
         except Exception as e:
@@ -217,8 +245,9 @@ async def delete_entities(
 async def add_relationships(
     db: aiosqlite.Connection,
     relationships: list[RelationshipInput],
+    config: Config | None = None,
 ) -> AddResult:
-    """Batch-add typed edges between entities (by name)."""
+    """Batch-add typed edges between entities (by name). Embeds if config provided."""
     result = AddResult()
     now = utcnow()
 
@@ -237,12 +266,34 @@ async def add_relationships(
 
             props_json = json.dumps(rel.properties)
             await db.execute(
-                """INSERT INTO relationships (source_id, target_id, type, properties, created_at)
-                   VALUES (?, ?, ?, ?, ?)
+                """INSERT INTO relationships
+                   (source_id, target_id, type, properties, confidence, provenance, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(source_id, target_id, type) DO UPDATE SET
-                       properties = excluded.properties""",
-                (source_id, target_id, rel.type, props_json, now),
+                       properties = excluded.properties,
+                       confidence = excluded.confidence,
+                       provenance = excluded.provenance""",
+                (source_id, target_id, rel.type, props_json, rel.confidence, rel.provenance, now),
             )
+
+            # Embed relationship if config provided
+            if config is not None:
+                rel_cursor = await db.execute(
+                    """SELECT id FROM relationships
+                       WHERE source_id = ? AND target_id = ? AND type = ?""",
+                    (source_id, target_id, rel.type),
+                )
+                rel_row = await rel_cursor.fetchone()
+                if rel_row is not None:
+                    rel_text = relationship_embedding_text(
+                        rel.source, rel.type, rel.target, rel.properties
+                    )
+                    embedding = await embed_text(rel_text, config)
+                    blob = serialize_embedding(embedding)
+                    await _upsert_embedding(
+                        db, "relationship_embeddings", "relationship_id", rel_row["id"], blob
+                    )
+
             result.added += 1
         except Exception as e:
             result.errors.append(f"Relationship '{rel.source}' -> '{rel.target}' ({rel.type}): {e}")
@@ -254,8 +305,9 @@ async def add_relationships(
 async def update_relationships(
     db: aiosqlite.Connection,
     updates: list[RelationshipUpdate],
+    config: Config | None = None,
 ) -> UpdateResult:
-    """Update relationship type or properties."""
+    """Update relationship type or properties. Re-embeds if config provided."""
     result = UpdateResult()
 
     for update in updates:
@@ -271,7 +323,7 @@ async def update_relationships(
                 continue
 
             cursor = await db.execute(
-                """SELECT id, type, properties FROM relationships
+                """SELECT id, type, properties, confidence, provenance FROM relationships
                    WHERE source_id = ? AND target_id = ? AND type = ?""",
                 (source_id, target_id, update.type),
             )
@@ -282,17 +334,43 @@ async def update_relationships(
                 )
                 continue
 
+            rel_id: int = row["id"]
             new_type = update.new_type or row["type"]
             new_props = (
                 json.dumps(update.new_properties)
                 if update.new_properties is not None
                 else row["properties"]
             )
+            new_confidence = (
+                update.new_confidence if update.new_confidence is not None else row["confidence"]
+            )
+            new_provenance = (
+                update.new_provenance if update.new_provenance is not None else row["provenance"]
+            )
 
             await db.execute(
-                "UPDATE relationships SET type = ?, properties = ? WHERE id = ?",
-                (new_type, new_props, row["id"]),
+                """UPDATE relationships
+                   SET type = ?, properties = ?, confidence = ?, provenance = ?
+                   WHERE id = ?""",
+                (new_type, new_props, new_confidence, new_provenance, rel_id),
             )
+
+            # Re-embed if type or properties changed
+            if config is not None and (update.new_type or update.new_properties is not None):
+                props = (
+                    update.new_properties
+                    if update.new_properties is not None
+                    else json.loads(row["properties"])
+                )
+                rel_text = relationship_embedding_text(
+                    update.source, new_type, update.target, props
+                )
+                embedding = await embed_text(rel_text, config)
+                blob = serialize_embedding(embedding)
+                await _upsert_embedding(
+                    db, "relationship_embeddings", "relationship_id", rel_id, blob
+                )
+
             result.updated += 1
         except Exception as e:
             result.errors.append(
@@ -331,15 +409,7 @@ async def get_entity(db: aiosqlite.Connection, name: str) -> EntityDetail | None
         (entity_id, entity_id),
     )
     rel_rows = await rel_cursor.fetchall()
-    relationships = [
-        RelationshipDetail(
-            source=r["source_name"],
-            target=r["target_name"],
-            type=r["type"],
-            properties=json.loads(r["properties"]),
-        )
-        for r in rel_rows
-    ]
+    relationships = [_row_to_relationship(r) for r in rel_rows]
 
     # Fetch observation summaries
     obs_cursor = await db.execute(
@@ -403,15 +473,7 @@ async def get_relationships(
     rows = await cursor.fetchall()
 
     return RelationshipResults(
-        relationships=[
-            RelationshipDetail(
-                source=r["source_name"],
-                target=r["target_name"],
-                type=r["type"],
-                properties=json.loads(r["properties"]),
-            )
-            for r in rows
-        ]
+        relationships=[_row_to_relationship(r) for r in rows]
     )
 
 
@@ -558,8 +620,649 @@ async def get_neighbors(
 
 
 # ---------------------------------------------------------------------------
+# Graph intelligence
+# ---------------------------------------------------------------------------
+
+
+async def merge_entities(
+    db: aiosqlite.Connection,
+    source_names: list[str],
+    target_name: str,
+    config: Config,
+    merge_properties: bool = True,
+) -> MergeResult:
+    """Merge source entities into target. Reassigns relationships and observations."""
+    result = MergeResult()
+
+    # Resolve target entity
+    cursor = await db.execute(
+        "SELECT id, type, properties FROM entities WHERE name = ?", (target_name,)
+    )
+    target_row = await cursor.fetchone()
+    if target_row is None:
+        result.errors.append(f"Target entity '{target_name}' not found")
+        return result
+
+    target_id: int = target_row["id"]
+    target_props: dict[str, str] = json.loads(target_row["properties"])
+
+    for source_name in source_names:
+        if source_name == target_name:
+            result.errors.append(f"Cannot merge entity '{source_name}' into itself")
+            continue
+
+        cursor = await db.execute(
+            "SELECT id, properties FROM entities WHERE name = ?", (source_name,)
+        )
+        source_row = await cursor.fetchone()
+        if source_row is None:
+            result.errors.append(f"Source entity '{source_name}' not found")
+            continue
+
+        source_id: int = source_row["id"]
+
+        try:
+            # Merge properties (target wins on conflict)
+            if merge_properties:
+                source_props: dict[str, str] = json.loads(source_row["properties"])
+                merged_props = {**source_props, **target_props}
+                await db.execute(
+                    "UPDATE entities SET properties = ? WHERE id = ?",
+                    (json.dumps(merged_props), target_id),
+                )
+                target_props = merged_props
+
+            # Reassign observation links (IGNORE handles duplicates)
+            obs_cursor = await db.execute(
+                "SELECT observation_id FROM observation_entities WHERE entity_id = ?",
+                (source_id,),
+            )
+            obs_rows = await obs_cursor.fetchall()
+            for obs_row in obs_rows:
+                await db.execute(
+                    """INSERT OR IGNORE INTO observation_entities
+                       (observation_id, entity_id) VALUES (?, ?)""",
+                    (obs_row["observation_id"], target_id),
+                )
+                result.observations_transferred += 1
+
+            # Reassign relationships from both sides
+            for side, other_side in [("source_id", "target_id"), ("target_id", "source_id")]:
+                rel_cursor = await db.execute(
+                    f"SELECT id, source_id, target_id, type FROM relationships WHERE {side} = ?",
+                    (source_id,),
+                )
+                for rel_row in await rel_cursor.fetchall():
+                    other_id: int = rel_row[other_side]
+                    # Build the duplicate-check query with target_id in the reassigned position
+                    check_src = target_id if side == "source_id" else other_id
+                    check_tgt = other_id if side == "source_id" else target_id
+                    dup_cursor = await db.execute(
+                        """SELECT id FROM relationships
+                           WHERE source_id = ? AND target_id = ? AND type = ?""",
+                        (check_src, check_tgt, rel_row["type"]),
+                    )
+                    dup = await dup_cursor.fetchone()
+                    if dup is None and other_id != target_id:
+                        await db.execute(
+                            f"UPDATE relationships SET {side} = ? WHERE id = ?",
+                            (target_id, rel_row["id"]),
+                        )
+                        result.relationships_transferred += 1
+
+            # Delete source entity (cascades remaining relationships)
+            await db.execute("DELETE FROM entities WHERE id = ?", (source_id,))
+            await db.execute("DELETE FROM entity_embeddings WHERE entity_id = ?", (source_id,))
+            result.merged += 1
+
+        except Exception as e:
+            result.errors.append(f"Merging '{source_name}': {e}")
+
+    # Re-embed target entity
+    if result.merged > 0:
+        try:
+            cursor = await db.execute(
+                "SELECT name, type, properties FROM entities WHERE id = ?", (target_id,)
+            )
+            row = await cursor.fetchone()
+            if row is not None:
+                text = entity_embedding_text(
+                    row["name"], row["type"], json.loads(row["properties"])
+                )
+                embedding = await embed_text(text, config)
+                blob = serialize_embedding(embedding)
+                await _upsert_embedding(db, "entity_embeddings", "entity_id", target_id, blob)
+        except Exception as e:
+            result.errors.append(f"Re-embedding target: {e}")
+
+    await db.commit()
+    return result
+
+
+async def extract_subgraph(
+    db: aiosqlite.Connection,
+    seed_entities: list[str] | None = None,
+    depth: int = 2,
+    max_entities: int = 50,
+) -> Subgraph:
+    """BFS subgraph extraction from seed entities."""
+    # Resolve seeds
+    seed_ids: set[int] = set()
+    seed_names: list[str] = []
+
+    if seed_entities:
+        for name in seed_entities:
+            eid = await _resolve_entity_id(db, name)
+            if eid is not None:
+                seed_ids.add(eid)
+                seed_names.append(name)
+
+    if not seed_ids:
+        return Subgraph(seed_entities=seed_names)
+
+    # BFS traversal
+    visited: dict[int, int] = {}  # entity_id -> depth
+    frontier = list(seed_ids)
+    for eid in frontier:
+        visited[eid] = 0
+
+    current_depth = 0
+    while current_depth < depth and len(visited) < max_entities:
+        next_frontier: list[int] = []
+        for eid in frontier:
+            if len(visited) >= max_entities:
+                break
+            cursor = await db.execute(
+                """SELECT CASE WHEN r.source_id = ?
+                       THEN r.target_id ELSE r.source_id
+                   END AS neighbor_id
+                   FROM relationships r
+                   WHERE r.source_id = ? OR r.target_id = ?""",
+                (eid, eid, eid),
+            )
+            for row in await cursor.fetchall():
+                nid: int = row["neighbor_id"]
+                if nid not in visited and len(visited) < max_entities:
+                    visited[nid] = current_depth + 1
+                    next_frontier.append(nid)
+        frontier = next_frontier
+        current_depth += 1
+
+    if not visited:
+        return Subgraph(seed_entities=seed_names)
+
+    # Fetch entity details
+    ids = list(visited.keys())
+    placeholders = ", ".join("?" for _ in ids)
+    cursor = await db.execute(
+        f"SELECT id, name, type, properties FROM entities WHERE id IN ({placeholders})",
+        ids,
+    )
+    entities = [
+        SubgraphEntity(
+            name=row["name"],
+            type=row["type"],
+            properties=json.loads(row["properties"]),
+            depth=visited[row["id"]],
+        )
+        for row in await cursor.fetchall()
+    ]
+
+    # Fetch relationships between visited entities
+    cursor = await db.execute(
+        f"""SELECT r.type, r.properties, src.name AS source_name, tgt.name AS target_name
+            FROM relationships r
+            JOIN entities src ON r.source_id = src.id
+            JOIN entities tgt ON r.target_id = tgt.id
+            WHERE r.source_id IN ({placeholders}) AND r.target_id IN ({placeholders})""",
+        [*ids, *ids],
+    )
+    relationships = [_row_to_relationship(r) for r in await cursor.fetchall()]
+
+    return Subgraph(entities=entities, relationships=relationships, seed_entities=seed_names)
+
+
+async def get_centrality(
+    db: aiosqlite.Connection,
+    metric: str = "degree",
+    entity_names: list[str] | None = None,
+    limit: int = 20,
+) -> CentralityResults:
+    """Compute centrality metrics. Supports 'degree' and 'pagerank'."""
+    if metric == "degree":
+        return await _degree_centrality(db, entity_names, limit)
+    if metric == "pagerank":
+        return await _pagerank_centrality(db, entity_names, limit)
+    return CentralityResults(metric=metric, results=[])
+
+
+async def _degree_centrality(
+    db: aiosqlite.Connection,
+    entity_names: list[str] | None,
+    limit: int,
+) -> CentralityResults:
+    """Degree centrality via SQL COUNT."""
+    name_filter = ""
+    params: list[str | int] = []
+    if entity_names:
+        placeholders = ", ".join("?" for _ in entity_names)
+        name_filter = f"WHERE e.name IN ({placeholders})"
+        params = list(entity_names)
+    params.append(limit)
+
+    cursor = await db.execute(
+        f"""SELECT e.name, e.type,
+                   (SELECT COUNT(*) FROM relationships r
+                    WHERE r.source_id = e.id OR r.target_id = e.id) AS score
+            FROM entities e
+            {name_filter}
+            ORDER BY score DESC
+            LIMIT ?""",
+        params,
+    )
+    rows = await cursor.fetchall()
+    return CentralityResults(
+        metric="degree",
+        results=[
+            CentralityResult(name=r["name"], type=r["type"], score=float(r["score"])) for r in rows
+        ],
+    )
+
+
+async def _pagerank_centrality(
+    db: aiosqlite.Connection,
+    entity_names: list[str] | None,
+    limit: int,
+) -> CentralityResults:
+    """PageRank via iterative Python computation."""
+    # Load all entities
+    cursor = await db.execute("SELECT id, name, type FROM entities")
+    entity_rows = await cursor.fetchall()
+    if not entity_rows:
+        return CentralityResults(metric="pagerank", results=[])
+
+    id_to_info: dict[int, tuple[str, str]] = {}
+    for row in entity_rows:
+        id_to_info[row["id"]] = (row["name"], row["type"])
+
+    # Load adjacency
+    cursor = await db.execute("SELECT source_id, target_id FROM relationships")
+    rel_rows = await cursor.fetchall()
+
+    incoming: dict[int, list[int]] = {eid: [] for eid in id_to_info}
+    out_degree: dict[int, int] = {eid: 0 for eid in id_to_info}
+
+    for row in rel_rows:
+        src: int = row["source_id"]
+        tgt: int = row["target_id"]
+        if src in id_to_info and tgt in id_to_info:
+            incoming[tgt].append(src)
+            out_degree[src] += 1
+            # Treat as undirected for PageRank
+            incoming[src].append(tgt)
+            out_degree[tgt] += 1
+
+    n = len(id_to_info)
+    d = 0.85
+    scores = {eid: 1.0 / n for eid in id_to_info}
+
+    for _ in range(20):
+        new_scores: dict[int, float] = {}
+        for eid in id_to_info:
+            rank = (1 - d) / n
+            for neighbor in incoming[eid]:
+                if out_degree[neighbor] > 0:
+                    rank += d * scores[neighbor] / out_degree[neighbor]
+            new_scores[eid] = rank
+        scores = new_scores
+
+    # Sort and filter
+    sorted_entities = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+    if entity_names:
+        name_set = set(entity_names)
+        sorted_entities = [(eid, s) for eid, s in sorted_entities if id_to_info[eid][0] in name_set]
+
+    results = [
+        CentralityResult(name=id_to_info[eid][0], type=id_to_info[eid][1], score=score)
+        for eid, score in sorted_entities[:limit]
+    ]
+
+    return CentralityResults(metric="pagerank", results=results)
+
+
+async def get_timeline(
+    db: aiosqlite.Connection,
+    entity_names: list[str] | None = None,
+    entity_types: list[str] | None = None,
+    limit: int = 50,
+) -> Timeline:
+    """Observations in chronological order, optionally filtered by entity."""
+    conditions: list[str] = []
+    params: list[str | int] = []
+
+    if entity_names:
+        placeholders = ", ".join("?" for _ in entity_names)
+        conditions.append(f"""o.id IN (
+            SELECT oe.observation_id FROM observation_entities oe
+            JOIN entities e ON oe.entity_id = e.id
+            WHERE e.name IN ({placeholders})
+        )""")
+        params.extend(entity_names)
+
+    if entity_types:
+        placeholders = ", ".join("?" for _ in entity_types)
+        conditions.append(f"""o.id IN (
+            SELECT oe.observation_id FROM observation_entities oe
+            JOIN entities e ON oe.entity_id = e.id
+            WHERE e.type IN ({placeholders})
+        )""")
+        params.extend(entity_types)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    params.append(limit)
+
+    cursor = await db.execute(
+        f"""SELECT o.id, o.content, o.created_at
+            FROM observations o
+            {where}
+            ORDER BY o.created_at ASC
+            LIMIT ?""",
+        params,
+    )
+    rows = await cursor.fetchall()
+
+    entries: list[TimelineEntry] = []
+    for row in rows:
+        # Get entity names for each observation
+        ecursor = await db.execute(
+            """SELECT e.name FROM entities e
+               JOIN observation_entities oe ON e.id = oe.entity_id
+               WHERE oe.observation_id = ?""",
+            (row["id"],),
+        )
+        erows = await ecursor.fetchall()
+        entries.append(
+            TimelineEntry(
+                observation_id=row["id"],
+                content_snippet=row["content"][:SNIPPET_LENGTH],
+                entity_names=[r["name"] for r in erows],
+                created_at=row["created_at"],
+            )
+        )
+
+    return Timeline(entries=entries)
+
+
+async def _scalar(db: aiosqlite.Connection, sql: str) -> int:
+    """Execute a query returning a single COUNT(*) AS cnt value."""
+    cursor = await db.execute(sql)
+    row = await cursor.fetchone()
+    return row["cnt"] if row else 0
+
+
+async def _check_pyramid_staleness(db: aiosqlite.Connection) -> PyramidStats | None:
+    """Check pyramid observation level distribution and staleness.
+
+    Returns None if no observations have level metadata.
+    """
+    # Level distribution
+    cursor = await db.execute(
+        """SELECT COALESCE(json_extract(metadata, '$.level'), '_unlabeled') AS level,
+                  COUNT(*) AS cnt
+           FROM observations GROUP BY level"""
+    )
+    rows = await cursor.fetchall()
+    if not rows:
+        return None
+
+    counts: dict[str, int] = {r["level"]: r["cnt"] for r in rows}
+    detail_count = counts.get("detail", 0)
+    summary_count = counts.get("summary", 0)
+    overview_count = counts.get("overview", 0)
+    unlabeled_count = counts.get("_unlabeled", 0)
+
+    # No pyramid-labeled observations at all → return None
+    if detail_count == 0 and summary_count == 0 and overview_count == 0:
+        return None
+
+    # Staleness detection
+    cursor = await db.execute(
+        """SELECT e.name,
+                  MAX(CASE WHEN json_extract(o.metadata, '$.level') = 'detail'
+                      THEN o.created_at END) AS latest_detail,
+                  MAX(CASE WHEN json_extract(o.metadata, '$.level') = 'summary'
+                      THEN o.created_at END) AS latest_summary,
+                  MAX(CASE WHEN json_extract(o.metadata, '$.level') = 'overview'
+                      THEN o.created_at END) AS latest_overview
+           FROM entities e
+           JOIN observation_entities oe ON oe.entity_id = e.id
+           JOIN observations o ON o.id = oe.observation_id
+           WHERE json_extract(o.metadata, '$.level') IS NOT NULL
+           GROUP BY e.id, e.name
+           HAVING latest_detail IS NOT NULL
+             AND ((latest_summary IS NOT NULL AND latest_detail > latest_summary)
+               OR (latest_overview IS NOT NULL AND latest_detail > latest_overview))"""
+    )
+    stale_rows = await cursor.fetchall()
+
+    stale_summary: list[str] = []
+    stale_overview: list[str] = []
+    for row in stale_rows:
+        if row["latest_summary"] is not None and row["latest_detail"] > row["latest_summary"]:
+            stale_summary.append(row["name"])
+        if row["latest_overview"] is not None and row["latest_detail"] > row["latest_overview"]:
+            stale_overview.append(row["name"])
+
+    return PyramidStats(
+        detail_count=detail_count,
+        summary_count=summary_count,
+        overview_count=overview_count,
+        unlabeled_count=unlabeled_count,
+        stale_summary_entities=stale_summary,
+        stale_overview_entities=stale_overview,
+    )
+
+
+async def get_stats(db: aiosqlite.Connection) -> GraphStats:
+    """Aggregate statistics about the knowledge graph."""
+    entity_count = await _scalar(db, "SELECT COUNT(*) AS cnt FROM entities")
+    relationship_count = await _scalar(db, "SELECT COUNT(*) AS cnt FROM relationships")
+    observation_count = await _scalar(db, "SELECT COUNT(*) AS cnt FROM observations")
+
+    # Entity types
+    cursor = await db.execute(
+        "SELECT type, COUNT(*) AS cnt FROM entities GROUP BY type ORDER BY cnt DESC"
+    )
+    entity_types = {r["type"]: r["cnt"] for r in await cursor.fetchall()}
+
+    # Relationship types
+    cursor = await db.execute(
+        "SELECT type, COUNT(*) AS cnt FROM relationships GROUP BY type ORDER BY cnt DESC"
+    )
+    relationship_types = {r["type"]: r["cnt"] for r in await cursor.fetchall()}
+
+    # Averages
+    avg_rels = relationship_count * 2.0 / entity_count if entity_count > 0 else 0.0
+    avg_obs_cursor = await db.execute(
+        """SELECT AVG(cnt) AS avg_cnt FROM (
+            SELECT COUNT(oe.observation_id) AS cnt FROM entities e
+            LEFT JOIN observation_entities oe ON oe.entity_id = e.id
+            GROUP BY e.id
+        )"""
+    )
+    avg_obs_row = await avg_obs_cursor.fetchone()
+    avg_obs = float(avg_obs_row["avg_cnt"]) if avg_obs_row and avg_obs_row["avg_cnt"] else 0.0
+
+    entities_without_obs = await _scalar(
+        db,
+        """SELECT COUNT(*) AS cnt FROM entities e
+           WHERE NOT EXISTS (
+               SELECT 1 FROM observation_entities oe
+               WHERE oe.entity_id = e.id)""",
+    )
+    orphan_obs = await _scalar(
+        db,
+        """SELECT COUNT(*) AS cnt FROM observations o
+           WHERE NOT EXISTS (
+               SELECT 1 FROM observation_entities oe
+               WHERE oe.observation_id = o.id)""",
+    )
+
+    pyramid = await _check_pyramid_staleness(db)
+
+    return GraphStats(
+        entity_count=entity_count,
+        relationship_count=relationship_count,
+        observation_count=observation_count,
+        entity_types=entity_types,
+        relationship_types=relationship_types,
+        avg_relationships_per_entity=round(avg_rels, 2),
+        avg_observations_per_entity=round(avg_obs, 2),
+        entities_without_observations=entities_without_obs,
+        orphan_observations=orphan_obs,
+        pyramid=pyramid,
+    )
+
+
+async def validate_graph(db: aiosqlite.Connection) -> ValidationResults:
+    """Check graph for quality issues."""
+    issues: list[ValidationIssue] = []
+
+    # Island entities (no relationships, no observations)
+    cursor = await db.execute(
+        """SELECT e.name FROM entities e
+           WHERE NOT EXISTS (
+               SELECT 1 FROM relationships r
+               WHERE r.source_id = e.id OR r.target_id = e.id)
+           AND NOT EXISTS (
+               SELECT 1 FROM observation_entities oe
+               WHERE oe.entity_id = e.id)"""
+    )
+    island_rows = await cursor.fetchall()
+    if island_rows:
+        names = [r["name"] for r in island_rows]
+        issues.append(
+            ValidationIssue(
+                severity="warning",
+                category="island_entity",
+                message=f"{len(names)} island entities (no relationships or observations)",
+                entity_names=names,
+            )
+        )
+
+    # Orphan observations (not linked to any entity)
+    cursor = await db.execute(
+        """SELECT o.id FROM observations o
+           WHERE NOT EXISTS (
+               SELECT 1 FROM observation_entities oe
+               WHERE oe.observation_id = o.id)"""
+    )
+    orphan_rows = list(await cursor.fetchall())
+    if orphan_rows:
+        issues.append(
+            ValidationIssue(
+                severity="warning",
+                category="orphan_observation",
+                message=f"{len(orphan_rows)} observations not linked to any entity",
+            )
+        )
+
+    # Duplicate name candidates (same name, different types)
+    cursor = await db.execute(
+        """SELECT name, COUNT(DISTINCT type) AS type_count
+           FROM entities GROUP BY name HAVING type_count > 1"""
+    )
+    dup_rows = await cursor.fetchall()
+    for row in dup_rows:
+        issues.append(
+            ValidationIssue(
+                severity="warning",
+                category="duplicate_candidate",
+                message=(
+                    f"Entity '{row['name']}' exists with "
+                    f"{row['type_count']} different types — merge candidate"
+                ),
+                entity_names=[row["name"]],
+            )
+        )
+
+    # Entities without observations (but with relationships — not islands)
+    cursor = await db.execute(
+        """SELECT e.name FROM entities e
+           WHERE NOT EXISTS (
+               SELECT 1 FROM observation_entities oe
+               WHERE oe.entity_id = e.id)
+           AND EXISTS (
+               SELECT 1 FROM relationships r
+               WHERE r.source_id = e.id OR r.target_id = e.id)"""
+    )
+    no_obs_rows = await cursor.fetchall()
+    if no_obs_rows:
+        names = [r["name"] for r in no_obs_rows]
+        issues.append(
+            ValidationIssue(
+                severity="warning",
+                category="missing_observations",
+                message=f"{len(names)} entities have relationships but no observations",
+                entity_names=names,
+            )
+        )
+
+    # Pyramid staleness
+    pyramid = await _check_pyramid_staleness(db)
+    if pyramid is not None:
+        if pyramid.stale_summary_entities:
+            issues.append(
+                ValidationIssue(
+                    severity="warning",
+                    category="stale_summary",
+                    message=(
+                        f"{len(pyramid.stale_summary_entities)} entities have summary "
+                        "observations older than their latest detail"
+                    ),
+                    entity_names=pyramid.stale_summary_entities,
+                )
+            )
+        if pyramid.stale_overview_entities:
+            issues.append(
+                ValidationIssue(
+                    severity="warning",
+                    category="stale_overview",
+                    message=(
+                        f"{len(pyramid.stale_overview_entities)} entities have overview "
+                        "observations older than their latest detail"
+                    ),
+                    entity_names=pyramid.stale_overview_entities,
+                )
+            )
+
+    # Build summary
+    if not issues:
+        summary = "No issues found. Graph looks healthy."
+    else:
+        counts: dict[str, int] = {}
+        for issue in issues:
+            counts[issue.category] = counts.get(issue.category, 0) + 1
+        parts = [f"{v} {k}" for k, v in counts.items()]
+        summary = f"Found {len(issues)} issues: {', '.join(parts)}"
+
+    return ValidationResults(issues=issues, summary=summary)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _row_to_relationship(row: aiosqlite.Row) -> RelationshipDetail:
+    """Convert a database row with source_name, target_name, type, properties to model."""
+    return RelationshipDetail(
+        source=row["source_name"],
+        target=row["target_name"],
+        type=row["type"],
+        properties=json.loads(row["properties"]),
+    )
 
 
 async def _resolve_entity_id(db: aiosqlite.Connection, name: str) -> int | None:
@@ -567,3 +1270,18 @@ async def _resolve_entity_id(db: aiosqlite.Connection, name: str) -> int | None:
     cursor = await db.execute("SELECT id FROM entities WHERE name = ?", (name,))
     row = await cursor.fetchone()
     return row["id"] if row is not None else None
+
+
+async def _upsert_embedding(
+    db: aiosqlite.Connection,
+    table: str,
+    id_column: str,
+    id_value: int,
+    blob: bytes,
+) -> None:
+    """Delete-then-insert into an embedding table (vec0 lacks ON CONFLICT)."""
+    await db.execute(f"DELETE FROM {table} WHERE {id_column} = ?", (id_value,))
+    await db.execute(
+        f"INSERT INTO {table} ({id_column}, embedding) VALUES (?, ?)",
+        (id_value, blob),
+    )
