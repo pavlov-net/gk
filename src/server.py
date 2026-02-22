@@ -63,6 +63,7 @@ async def _lifespan(_server: FastMCP[None]) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await _db.execute("PRAGMA optimize")
         await _db.close()
         _db = None
 
@@ -105,7 +106,8 @@ Search to find relevant observations, read for full text, traverse for structure
 Use validate_graph periodically to check quality. Use merge_entities to consolidate duplicates.
 All observations and entities support optional confidence (0-1) and provenance tracking.
 
-**Guides:** Read resources `gk://guides/extraction`, `gk://guides/pyramid`, `gk://guides/query`, `gk://guides/review` for workflow guidance.
+**Guides:** Read resources `gk://guides/extraction`, `gk://guides/pyramid`,
+`gk://guides/query`, `gk://guides/review` for workflow guidance.
 """,
 )
 

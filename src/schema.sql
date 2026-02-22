@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS observation_entities (
     PRIMARY KEY (observation_id, entity_id)
 );
 
+-- Indexes for common query patterns
+CREATE INDEX IF NOT EXISTS idx_relationships_target_id ON relationships(target_id);
+CREATE INDEX IF NOT EXISTS idx_observation_entities_entity_id ON observation_entities(entity_id);
+CREATE INDEX IF NOT EXISTS idx_observations_created_at ON observations(created_at);
+
 -- FTS5 external content table (no text duplication — reads from observations)
 CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
     content,

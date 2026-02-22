@@ -38,7 +38,7 @@ async def test_add_entities(
 
     # Verify in DB
     cursor = await db.execute("SELECT name, type, properties FROM entities ORDER BY name")
-    rows = await cursor.fetchall()
+    rows = list(await cursor.fetchall())
     assert len(rows) == 2
     assert rows[0]["name"] == "Alice"
     assert rows[1]["name"] == "Wonderland"

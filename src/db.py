@@ -22,6 +22,9 @@ async def init_db(config: Config) -> aiosqlite.Connection:
     # Enable WAL mode and foreign keys
     await db.execute("PRAGMA journal_mode=WAL")
     await db.execute("PRAGMA foreign_keys=ON")
+    await db.execute("PRAGMA busy_timeout=5000")
+    await db.execute("PRAGMA synchronous=NORMAL")
+    await db.execute("PRAGMA cache_size=-64000")
 
     # Load sqlite-vec extension
     await db.enable_load_extension(True)

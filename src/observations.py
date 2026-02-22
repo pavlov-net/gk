@@ -29,6 +29,20 @@ async def add_observations(
     texts = [obs.content for obs in observations]
     embeddings = await embed_texts(texts, config)
 
+    # Batch-resolve all unique entity names upfront
+    all_entity_names: set[str] = set()
+    for obs in observations:
+        all_entity_names.update(obs.entity_names)
+    entity_name_to_id: dict[str, int] = {}
+    if all_entity_names:
+        names_list = list(all_entity_names)
+        placeholders = ", ".join("?" for _ in names_list)
+        ecursor = await db.execute(
+            f"SELECT id, name FROM entities WHERE name IN ({placeholders})", names_list
+        )
+        for erow in await ecursor.fetchall():
+            entity_name_to_id.setdefault(erow["name"], erow["id"])
+
     now = utcnow()
     for obs, embedding in zip(observations, embeddings, strict=True):
         try:
@@ -51,15 +65,14 @@ async def add_observations(
                 (obs_id, blob),
             )
 
-            # Link to entities
+            # Link to entities using pre-resolved lookup
             for entity_name in obs.entity_names:
-                ecursor = await db.execute("SELECT id FROM entities WHERE name = ?", (entity_name,))
-                erow = await ecursor.fetchone()
-                if erow is not None:
+                eid = entity_name_to_id.get(entity_name)
+                if eid is not None:
                     await db.execute(
                         """INSERT OR IGNORE INTO observation_entities
                            (observation_id, entity_id) VALUES (?, ?)""",
-                        (obs_id, erow["id"]),
+                        (obs_id, eid),
                     )
                 else:
                     result.errors.append(
@@ -67,6 +80,7 @@ async def add_observations(
                     )
 
             result.added += 1
+            result.ids.append(obs_id)
         except Exception as e:
             result.errors.append(f"Observation: {e}")
 
@@ -105,7 +119,7 @@ async def read_observation(
     )
 
 
-def _split_into_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
+def split_into_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
     """Split text at sentence boundaries near chunk_size."""
     if len(text) <= chunk_size:
         return [text]
@@ -147,7 +161,7 @@ async def add_chunked_observation(
     entity_names = entity_names or []
     metadata = metadata or {}
 
-    chunks = _split_into_chunks(content, chunk_size, chunk_overlap)
+    chunks = split_into_chunks(content, chunk_size, chunk_overlap)
     result.chunk_count = len(chunks)
 
     # Build observations from chunks
@@ -165,14 +179,9 @@ async def add_chunked_observation(
     # Use add_observations for the actual insertion
     add_result = await add_observations(db, observations, config)
 
-    # Collect IDs of inserted observations
-    if add_result.added > 0:
-        cursor = await db.execute(
-            "SELECT id FROM observations ORDER BY id DESC LIMIT ?",
-            (add_result.added,),
-        )
-        rows = await cursor.fetchall()
-        result.observation_ids = sorted(r["id"] for r in rows)
+    # Use IDs collected during insertion (no re-query needed)
+    if add_result.ids:
+        result.observation_ids = add_result.ids
 
         # Set parent_id metadata on all chunks (first chunk's ID)
         if len(result.observation_ids) > 1:
