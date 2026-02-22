@@ -31,18 +31,23 @@ def _escape_fts5_query(query: str) -> str:
     return " ".join(escaped)
 
 
-async def _get_entity_names_for_observation(
-    db: aiosqlite.Connection, observation_id: int
-) -> list[str]:
-    """Fetch entity names linked to an observation."""
+async def _get_entity_names_for_observations(
+    db: aiosqlite.Connection, observation_ids: list[int]
+) -> dict[int, list[str]]:
+    """Batch-fetch entity names linked to multiple observations."""
+    if not observation_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in observation_ids)
     cursor = await db.execute(
-        """SELECT e.name FROM entities e
-           JOIN observation_entities oe ON e.id = oe.entity_id
-           WHERE oe.observation_id = ?""",
-        (observation_id,),
+        f"""SELECT oe.observation_id, e.name FROM entities e
+            JOIN observation_entities oe ON e.id = oe.entity_id
+            WHERE oe.observation_id IN ({placeholders})""",
+        observation_ids,
     )
-    rows = await cursor.fetchall()
-    return [r["name"] for r in rows]
+    result: dict[int, list[str]] = {oid: [] for oid in observation_ids}
+    for row in await cursor.fetchall():
+        result[row["observation_id"]].append(row["name"])
+    return result
 
 
 def _distance_to_score(distance: float) -> float:
@@ -113,15 +118,18 @@ async def _build_search_results(
     rows: Iterable[aiosqlite.Row],
     score_fn: str,
 ) -> list[SearchResult]:
-    """Build SearchResult list from rows, fetching entity names for each observation.
+    """Build SearchResult list from rows, fetching entity names in one batch query.
 
     score_fn controls how the score is derived:
       - "bm25": negates the score (bm25 returns negative, lower = better)
       - "distance": converts distance to similarity score in (0, 1]
     """
+    row_list = list(rows)
+    obs_ids = [row["id"] for row in row_list]
+    entity_map = await _get_entity_names_for_observations(db, obs_ids)
+
     results: list[SearchResult] = []
-    for row in rows:
-        entity_names = await _get_entity_names_for_observation(db, row["id"])
+    for row in row_list:
         if score_fn == "bm25":
             score = -float(row["score"])
         else:
@@ -129,7 +137,7 @@ async def _build_search_results(
         results.append(
             SearchResult(
                 observation_id=row["id"],
-                entity_names=entity_names,
+                entity_names=entity_map.get(row["id"], []),
                 content_snippet=row["content"][:SNIPPET_LENGTH],
                 score=score,
             )

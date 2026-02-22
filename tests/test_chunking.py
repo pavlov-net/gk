@@ -8,17 +8,17 @@ import aiosqlite
 from src.config import Config
 from src.graph import add_entities
 from src.models import EntityInput
-from src.observations import _split_into_chunks, add_chunked_observation
+from src.observations import add_chunked_observation, split_into_chunks
 
 
 def test_split_short_text() -> None:
-    result = _split_into_chunks("Short text.", chunk_size=500, overlap=50)
+    result = split_into_chunks("Short text.", chunk_size=500, overlap=50)
     assert result == ["Short text."]
 
 
 def test_split_at_sentence_boundary() -> None:
     text = "First sentence. Second sentence. Third sentence."
-    result = _split_into_chunks(text, chunk_size=30, overlap=5)
+    result = split_into_chunks(text, chunk_size=30, overlap=5)
     assert len(result) >= 2
     # All content should be covered across chunks
     combined = " ".join(c.strip() for c in result)
@@ -28,7 +28,7 @@ def test_split_at_sentence_boundary() -> None:
 
 def test_split_preserves_all_content() -> None:
     text = "A. B. C. D. E. F. G. H. I. J."
-    result = _split_into_chunks(text, chunk_size=10, overlap=2)
+    result = split_into_chunks(text, chunk_size=10, overlap=2)
     # All original content should appear in at least one chunk
     for char in "ABCDEFGHIJ":
         assert any(char in chunk for chunk in result), f"Missing '{char}' in chunks"

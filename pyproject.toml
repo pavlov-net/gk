@@ -33,13 +33,14 @@ dev = [
 ]
 
 [tool.pyright]
-include = ["src"]
+include = ["src", "tests"]
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
 
 [tool.ruff]
 target-version = "py314"
 line-length = 100
+include = ["src/**/*.py", "tests/**/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]

@@ -79,7 +79,8 @@ async def add_entities(
                        properties = excluded.properties,
                        confidence = excluded.confidence,
                        provenance = excluded.provenance,
-                       updated_at = excluded.updated_at""",
+                       updated_at = excluded.updated_at
+                   RETURNING id""",
                 (
                     entity.name,
                     entity.type,
@@ -90,17 +91,8 @@ async def add_entities(
                     now,
                 ),
             )
-            entity_id = cursor.lastrowid
-
-            # For upsert, lastrowid might not be set on UPDATE — fetch it
-            if entity_id is None or entity_id == 0:
-                cursor2 = await db.execute(
-                    "SELECT id FROM entities WHERE name = ? AND type = ?",
-                    (entity.name, entity.type),
-                )
-                row = await cursor2.fetchone()
-                if row is not None:
-                    entity_id = row["id"]
+            row = await cursor.fetchone()
+            entity_id: int | None = row[0] if row else None
 
             if entity_id is not None:
                 blob = serialize_embedding(embedding)
@@ -221,13 +213,18 @@ async def delete_entities(
                 # Clean up entity embedding
                 await db.execute("DELETE FROM entity_embeddings WHERE entity_id = ?", (entity_id,))
 
-                # Delete orphaned observations and their embeddings
-                for obs_id in orphan_obs_ids:
+                # Delete orphaned observations and their embeddings in batch
+                if orphan_obs_ids:
+                    ph = ", ".join("?" for _ in orphan_obs_ids)
                     await db.execute(
-                        "DELETE FROM observation_embeddings WHERE observation_id = ?",
-                        (obs_id,),
+                        f"DELETE FROM observation_embeddings"
+                        f" WHERE observation_id IN ({ph})",
+                        orphan_obs_ids,
                     )
-                    await db.execute("DELETE FROM observations WHERE id = ?", (obs_id,))
+                    await db.execute(
+                        f"DELETE FROM observations WHERE id IN ({ph})",
+                        orphan_obs_ids,
+                    )
 
                 result.deleted += 1
         except Exception as e:
@@ -251,11 +248,26 @@ async def add_relationships(
     result = AddResult()
     now = utcnow()
 
+    # Batch-resolve all entity names upfront
+    all_names: set[str] = set()
+    for rel in relationships:
+        all_names.add(rel.source)
+        all_names.add(rel.target)
+    name_to_id: dict[str, int] = {}
+    if all_names:
+        names_list = list(all_names)
+        placeholders = ", ".join("?" for _ in names_list)
+        cursor = await db.execute(
+            f"SELECT id, name FROM entities WHERE name IN ({placeholders})", names_list
+        )
+        for row in await cursor.fetchall():
+            name_to_id.setdefault(row["name"], row["id"])
+
     for rel in relationships:
         try:
-            # Resolve entity names to IDs
-            source_id = await _resolve_entity_id(db, rel.source)
-            target_id = await _resolve_entity_id(db, rel.target)
+            # Resolve entity names to IDs from batch lookup
+            source_id = name_to_id.get(rel.source)
+            target_id = name_to_id.get(rel.target)
 
             if source_id is None:
                 result.errors.append(f"Source entity '{rel.source}' not found")
@@ -265,34 +277,29 @@ async def add_relationships(
                 continue
 
             props_json = json.dumps(rel.properties)
-            await db.execute(
+            rel_cursor = await db.execute(
                 """INSERT INTO relationships
                    (source_id, target_id, type, properties, confidence, provenance, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(source_id, target_id, type) DO UPDATE SET
                        properties = excluded.properties,
                        confidence = excluded.confidence,
-                       provenance = excluded.provenance""",
+                       provenance = excluded.provenance
+                   RETURNING id""",
                 (source_id, target_id, rel.type, props_json, rel.confidence, rel.provenance, now),
             )
+            rel_row = await rel_cursor.fetchone()
 
             # Embed relationship if config provided
-            if config is not None:
-                rel_cursor = await db.execute(
-                    """SELECT id FROM relationships
-                       WHERE source_id = ? AND target_id = ? AND type = ?""",
-                    (source_id, target_id, rel.type),
+            if config is not None and rel_row is not None:
+                rel_text = relationship_embedding_text(
+                    rel.source, rel.type, rel.target, rel.properties
                 )
-                rel_row = await rel_cursor.fetchone()
-                if rel_row is not None:
-                    rel_text = relationship_embedding_text(
-                        rel.source, rel.type, rel.target, rel.properties
-                    )
-                    embedding = await embed_text(rel_text, config)
-                    blob = serialize_embedding(embedding)
-                    await _upsert_embedding(
-                        db, "relationship_embeddings", "relationship_id", rel_row["id"], blob
-                    )
+                embedding = await embed_text(rel_text, config)
+                blob = serialize_embedding(embedding)
+                await _upsert_embedding(
+                    db, "relationship_embeddings", "relationship_id", rel_row[0], blob
+                )
 
             result.added += 1
         except Exception as e:
@@ -529,23 +536,39 @@ async def find_paths(
     )
     rows = await cursor.fetchall()
 
-    paths: list[PathResult] = []
+    # Collect all entity IDs across all paths, batch-resolve in one query
+    all_entity_ids: set[int] = set()
+    parsed_paths: list[tuple[list[int], list[str]]] = []
     for row in rows:
         path_ids_str: str = row["path_ids"]
         path_rel_str: str = row["path_rel_types"]
         entity_ids = [int(x) for x in path_ids_str.split(",")]
         rel_types: list[str] = path_rel_str.split(",") if path_rel_str else []
+        all_entity_ids.update(entity_ids)
+        parsed_paths.append((entity_ids, rel_types))
 
-        # Fetch entity details for this path
+    # One query to fetch all entity details
+    id_to_entity: dict[int, tuple[str, str]] = {}
+    if all_entity_ids:
+        ids_list = list(all_entity_ids)
+        placeholders = ", ".join("?" for _ in ids_list)
+        ecursor = await db.execute(
+            f"SELECT id, name, type FROM entities WHERE id IN ({placeholders})", ids_list
+        )
+        for erow in await ecursor.fetchall():
+            id_to_entity[erow["id"]] = (erow["name"], erow["type"])
+
+    # Build paths from lookup dict
+    paths: list[PathResult] = []
+    for entity_ids, rel_types in parsed_paths:
         steps: list[PathStep] = []
         for i, eid in enumerate(entity_ids):
-            ecursor = await db.execute("SELECT name, type FROM entities WHERE id = ?", (eid,))
-            erow = await ecursor.fetchone()
-            if erow is not None:
+            if eid in id_to_entity:
+                name, etype = id_to_entity[eid]
                 steps.append(
                     PathStep(
-                        entity_name=erow["name"],
-                        entity_type=erow["type"],
+                        entity_name=name,
+                        entity_type=etype,
                         relationship_type=(
                             rel_types[i - 1] if i > 0 and i - 1 < len(rel_types) else None
                         ),
@@ -672,43 +695,32 @@ async def merge_entities(
                 )
                 target_props = merged_props
 
-            # Reassign observation links (IGNORE handles duplicates)
-            obs_cursor = await db.execute(
-                "SELECT observation_id FROM observation_entities WHERE entity_id = ?",
+            # Reassign observation links in one batch (IGNORE handles duplicates)
+            await db.execute(
+                """INSERT OR IGNORE INTO observation_entities (observation_id, entity_id)
+                   SELECT observation_id, ? FROM observation_entities WHERE entity_id = ?""",
+                (target_id, source_id),
+            )
+            obs_count_cursor = await db.execute(
+                "SELECT COUNT(*) AS cnt FROM observation_entities WHERE entity_id = ?",
                 (source_id,),
             )
-            obs_rows = await obs_cursor.fetchall()
-            for obs_row in obs_rows:
-                await db.execute(
-                    """INSERT OR IGNORE INTO observation_entities
-                       (observation_id, entity_id) VALUES (?, ?)""",
-                    (obs_row["observation_id"], target_id),
-                )
-                result.observations_transferred += 1
+            obs_count_row = await obs_count_cursor.fetchone()
+            result.observations_transferred += obs_count_row["cnt"] if obs_count_row else 0
 
-            # Reassign relationships from both sides
+            # Reassign relationships in batch per side
             for side, other_side in [("source_id", "target_id"), ("target_id", "source_id")]:
-                rel_cursor = await db.execute(
-                    f"SELECT id, source_id, target_id, type FROM relationships WHERE {side} = ?",
-                    (source_id,),
+                cursor2 = await db.execute(
+                    f"""UPDATE relationships SET {side} = ?
+                        WHERE {side} = ? AND {other_side} != ?
+                        AND NOT EXISTS (
+                            SELECT 1 FROM relationships r2
+                            WHERE r2.{side} = ? AND r2.{other_side} = relationships.{other_side}
+                            AND r2.type = relationships.type
+                        )""",
+                    (target_id, source_id, target_id, target_id),
                 )
-                for rel_row in await rel_cursor.fetchall():
-                    other_id: int = rel_row[other_side]
-                    # Build the duplicate-check query with target_id in the reassigned position
-                    check_src = target_id if side == "source_id" else other_id
-                    check_tgt = other_id if side == "source_id" else target_id
-                    dup_cursor = await db.execute(
-                        """SELECT id FROM relationships
-                           WHERE source_id = ? AND target_id = ? AND type = ?""",
-                        (check_src, check_tgt, rel_row["type"]),
-                    )
-                    dup = await dup_cursor.fetchone()
-                    if dup is None and other_id != target_id:
-                        await db.execute(
-                            f"UPDATE relationships SET {side} = ? WHERE id = ?",
-                            (target_id, rel_row["id"]),
-                        )
-                        result.relationships_transferred += 1
+                result.relationships_transferred += cursor2.rowcount
 
             # Delete source entity (cascades remaining relationships)
             await db.execute("DELETE FROM entities WHERE id = ?", (source_id,))
@@ -767,22 +779,22 @@ async def extract_subgraph(
         visited[eid] = 0
 
     current_depth = 0
-    while current_depth < depth and len(visited) < max_entities:
+    while current_depth < depth and len(visited) < max_entities and frontier:
+        placeholders = ", ".join("?" for _ in frontier)
+        cursor = await db.execute(
+            f"""SELECT source_id, target_id FROM relationships
+                WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})""",
+            [*frontier, *frontier],
+        )
+        rel_rows = await cursor.fetchall()
+
+        frontier_set = set(frontier)
         next_frontier: list[int] = []
-        for eid in frontier:
-            if len(visited) >= max_entities:
-                break
-            cursor = await db.execute(
-                """SELECT CASE WHEN r.source_id = ?
-                       THEN r.target_id ELSE r.source_id
-                   END AS neighbor_id
-                   FROM relationships r
-                   WHERE r.source_id = ? OR r.target_id = ?""",
-                (eid, eid, eid),
-            )
-            for row in await cursor.fetchall():
-                nid: int = row["neighbor_id"]
-                if nid not in visited and len(visited) < max_entities:
+        for row in rel_rows:
+            src: int = row["source_id"]
+            tgt: int = row["target_id"]
+            for nid in (src, tgt):
+                if nid not in visited and nid not in frontier_set and len(visited) < max_entities:
                     visited[nid] = current_depth + 1
                     next_frontier.append(nid)
         frontier = next_frontier
@@ -851,11 +863,11 @@ async def _degree_centrality(
     params.append(limit)
 
     cursor = await db.execute(
-        f"""SELECT e.name, e.type,
-                   (SELECT COUNT(*) FROM relationships r
-                    WHERE r.source_id = e.id OR r.target_id = e.id) AS score
+        f"""SELECT e.name, e.type, COUNT(r.id) AS score
             FROM entities e
+            LEFT JOIN relationships r ON r.source_id = e.id OR r.target_id = e.id
             {name_filter}
+            GROUP BY e.id, e.name, e.type
             ORDER BY score DESC
             LIMIT ?""",
         params,
@@ -972,24 +984,29 @@ async def get_timeline(
     )
     rows = await cursor.fetchall()
 
-    entries: list[TimelineEntry] = []
-    for row in rows:
-        # Get entity names for each observation
+    # Batch-fetch entity names for all observations
+    obs_ids = [row["id"] for row in rows]
+    entity_map: dict[int, list[str]] = {oid: [] for oid in obs_ids}
+    if obs_ids:
+        placeholders = ", ".join("?" for _ in obs_ids)
         ecursor = await db.execute(
-            """SELECT e.name FROM entities e
-               JOIN observation_entities oe ON e.id = oe.entity_id
-               WHERE oe.observation_id = ?""",
-            (row["id"],),
+            f"""SELECT oe.observation_id, e.name FROM entities e
+                JOIN observation_entities oe ON e.id = oe.entity_id
+                WHERE oe.observation_id IN ({placeholders})""",
+            obs_ids,
         )
-        erows = await ecursor.fetchall()
-        entries.append(
-            TimelineEntry(
-                observation_id=row["id"],
-                content_snippet=row["content"][:SNIPPET_LENGTH],
-                entity_names=[r["name"] for r in erows],
-                created_at=row["created_at"],
-            )
+        for erow in await ecursor.fetchall():
+            entity_map[erow["observation_id"]].append(erow["name"])
+
+    entries: list[TimelineEntry] = [
+        TimelineEntry(
+            observation_id=row["id"],
+            content_snippet=row["content"][:SNIPPET_LENGTH],
+            entity_names=entity_map.get(row["id"], []),
+            created_at=row["created_at"],
         )
+        for row in rows
+    ]
 
     return Timeline(entries=entries)
 
@@ -1066,9 +1083,16 @@ async def _check_pyramid_staleness(db: aiosqlite.Connection) -> PyramidStats | N
 
 async def get_stats(db: aiosqlite.Connection) -> GraphStats:
     """Aggregate statistics about the knowledge graph."""
-    entity_count = await _scalar(db, "SELECT COUNT(*) AS cnt FROM entities")
-    relationship_count = await _scalar(db, "SELECT COUNT(*) AS cnt FROM relationships")
-    observation_count = await _scalar(db, "SELECT COUNT(*) AS cnt FROM observations")
+    counts_cursor = await db.execute(
+        """SELECT
+            (SELECT COUNT(*) FROM entities) AS entity_count,
+            (SELECT COUNT(*) FROM relationships) AS relationship_count,
+            (SELECT COUNT(*) FROM observations) AS observation_count"""
+    )
+    counts_row = await counts_cursor.fetchone()
+    entity_count: int = counts_row["entity_count"] if counts_row else 0
+    relationship_count: int = counts_row["relationship_count"] if counts_row else 0
+    observation_count: int = counts_row["observation_count"] if counts_row else 0
 
     # Entity types
     cursor = await db.execute(

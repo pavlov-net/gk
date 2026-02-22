@@ -81,6 +81,7 @@ class AddResult(BaseModel):
     """Result of a batch add operation."""
 
     added: int = 0
+    ids: list[int] = []
     errors: list[str] = []
 
 
