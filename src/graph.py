@@ -92,12 +92,13 @@ async def add_entities(
                 ),
             )
             row = await cursor.fetchone()
-            entity_id: int | None = row[0] if row else None
+            entity_id: int | None = row["id"] if row else None
 
             if entity_id is not None:
                 blob = serialize_embedding(embedding)
                 await _upsert_embedding(db, "entity_embeddings", "entity_id", entity_id, blob)
                 result.added += 1
+                result.ids.append(entity_id)
         except Exception as e:
             result.errors.append(f"Entity '{entity.name}' ({entity.type}): {e}")
 
@@ -289,19 +290,27 @@ async def add_relationships(
                 (source_id, target_id, rel.type, props_json, rel.confidence, rel.provenance, now),
             )
             rel_row = await rel_cursor.fetchone()
+            if rel_row is None:
+                result.errors.append(
+                    f"Relationship '{rel.source}' -> '{rel.target}' ({rel.type}): no ID returned"
+                )
+                continue
+
+            rel_id: int = rel_row["id"]
 
             # Embed relationship if config provided
-            if config is not None and rel_row is not None:
+            if config is not None:
                 rel_text = relationship_embedding_text(
                     rel.source, rel.type, rel.target, rel.properties
                 )
                 embedding = await embed_text(rel_text, config)
                 blob = serialize_embedding(embedding)
                 await _upsert_embedding(
-                    db, "relationship_embeddings", "relationship_id", rel_row[0], blob
+                    db, "relationship_embeddings", "relationship_id", rel_id, blob
                 )
 
             result.added += 1
+            result.ids.append(rel_id)
         except Exception as e:
             result.errors.append(f"Relationship '{rel.source}' -> '{rel.target}' ({rel.type}): {e}")
 
@@ -696,17 +705,12 @@ async def merge_entities(
                 target_props = merged_props
 
             # Reassign observation links in one batch (IGNORE handles duplicates)
-            await db.execute(
+            obs_cursor2 = await db.execute(
                 """INSERT OR IGNORE INTO observation_entities (observation_id, entity_id)
                    SELECT observation_id, ? FROM observation_entities WHERE entity_id = ?""",
                 (target_id, source_id),
             )
-            obs_count_cursor = await db.execute(
-                "SELECT COUNT(*) AS cnt FROM observation_entities WHERE entity_id = ?",
-                (source_id,),
-            )
-            obs_count_row = await obs_count_cursor.fetchone()
-            result.observations_transferred += obs_count_row["cnt"] if obs_count_row else 0
+            result.observations_transferred += obs_cursor2.rowcount
 
             # Reassign relationships in batch per side
             for side, other_side in [("source_id", "target_id"), ("target_id", "source_id")]:
