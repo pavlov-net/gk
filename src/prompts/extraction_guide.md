@@ -51,6 +51,23 @@ to relationships:
 - Set confidence (0-1) if the information quality varies
 - Set provenance to track where the information came from
 
+### Observation Coverage Check
+After creating all observations, verify coverage in the **entity → observations**
+direction (the reverse of the per-observation linking above):
+
+1. **Every entity must have at least one observation.** Run `validate_graph` and
+   fix any `missing_observations` warnings before proceeding to summaries or review.
+2. **Structural entities are commonly missed.** If you created container entities
+   (chapters, sections, modules, sprints), they need observations too — at minimum
+   a brief description of their scope and key contents.
+3. **Check entity types with low observation counts.** Run `get_stats` and compare
+   `avg_observations_per_entity` across types. A type with 0 observations per entity
+   signals a systematic gap.
+
+This check is a **hard gate** when using the pyramid pattern — details must be
+complete before writing summaries. See the Pyramid Extraction guide for the full
+workflow.
+
 ## 5. Review
 - Use validate_graph to check for quality issues
 - Use merge_entities to consolidate any duplicates

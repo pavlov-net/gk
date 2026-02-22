@@ -48,8 +48,19 @@ metadata: {"level": "overview", "scope": "theme"}
    **Exhaust detail extraction completely** before writing any summaries.
    This means every section of the source material should be covered and
    every entity should have its detail-level observations in place.
-2. Completeness gate: Run `validate_graph` after all details are added.
-   Fix any `missing_observations` warnings. Only then proceed to summaries.
+
+2. **Completeness gate (HARD STOP).** Do not proceed to summaries until
+   this gate passes cleanly:
+   - Run `validate_graph` — there must be **zero** `missing_observations`
+     warnings. Every entity that has relationships must also have at least
+     one detail observation.
+   - Pay special attention to **structural/container entities** (chapters,
+     sections, modules) — these are the most commonly missed because detail
+     observations tend to link to content entities (people, places, concepts)
+     rather than the containers that organize them.
+   - Run `get_stats` and check that `entities_without_observations` is 0.
+   - Fix all gaps before continuing.
+
 3. Second pass: write summary observations (synthesize related details)
 4. Third pass: write overview observations (themes and patterns)
 5. Use metadata_filters in search to query specific levels
