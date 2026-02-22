@@ -6,8 +6,13 @@ Run `validate_graph` to identify issues:
 - **Orphan observations**: observations not linked to any entity — link or remove
 - **Duplicate candidates**: same name with different types — use merge_entities
 - **Missing observations**: entities with relationships but no observations
-- **Stale summaries**: summary observations older than latest detail — refresh them
-- **Stale overviews**: overview observations older than latest detail — refresh them
+- **Stale summaries**: summary observations older than latest detail — triage them
+- **Stale overviews**: overview observations older than latest detail — triage them
+
+"Stale" means a newer detail exists, not that the summary is wrong.
+For each flagged entity: read the new details and the existing summary.
+If the summary still accurately reflects the entity, no update is needed.
+Only rewrite when genuinely new information changes the summary's conclusions.
 
 ## Step 2: Review Statistics
 Run `get_stats` to understand the graph shape:

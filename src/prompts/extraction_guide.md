@@ -10,12 +10,32 @@ Before adding anything, understand what's already there:
   "Person" don't introduce "person" or "People")
 
 ## 2. Identify Entities
-- Read the text carefully and identify all named entities
+- Read the text carefully and identify all significant entities — named or unnamed.
+  Entities don't require proper names; a descriptive name is fine (e.g.,
+  "Rate Limiter Module", "Q3 Budget Meeting", "The Lighthouse").
+- **Prefer more entities over fewer.** An entity that appears in only one passage
+  is still worth capturing if it's distinct enough to have its own properties
+  or relationships.
 - **Invent types that fit your domain** — there is no fixed vocabulary.
   A literary graph might use Person, Place, Theme; a codebase graph might
   use Module, Function, Pattern; an org graph might use Team, Project, Metric.
 - Use the canonical/full name for each entity (e.g., "Jay Gatsby" not just "Gatsby")
 - Add relevant properties as key-value pairs
+
+### Completeness Sweep
+After your initial entity identification, run these four checks before moving
+to relationships:
+
+1. **Type coverage**: Review your entity types. If a type has very few instances
+   compared to others, re-read the source looking for missed members of that type.
+2. **Section coverage**: Walk through each section/chunk of the source material.
+   If any section produced zero entities, re-read it — something was likely missed.
+3. **Implicit entities**: Check whether any relationships or observations reference
+   things that aren't yet entities. If an observation mentions a location, concept,
+   or actor that doesn't have its own entity, create one.
+4. **Relationship-driven discovery**: After drafting relationships, check for implied
+   entities. If you want to write "X LOCATED_IN ???" or "X DEPENDS_ON ???" but the
+   target doesn't exist, that's a missing entity.
 
 ## 3. Identify Relationships
 - Find how entities relate to each other in the text

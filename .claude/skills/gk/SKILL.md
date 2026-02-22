@@ -1,5 +1,5 @@
 ---
-name: gk-knowledge-graph
+name: gk
 description: >-
   This skill should be used when working with the gk knowledge graph MCP server —
   "extract knowledge", "add to the graph", "query the graph", "search the knowledge graph",

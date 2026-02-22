@@ -18,4 +18,3 @@ wheels/
 .ruff_cache/
 .claude/
 !.claude/skills/
-.mcp.json
