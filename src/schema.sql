@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS entities (
     name TEXT NOT NULL,
     type TEXT NOT NULL,
     properties TEXT NOT NULL DEFAULT '{}',
+    confidence REAL DEFAULT NULL,
+    provenance TEXT DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     UNIQUE(name, type)
@@ -16,6 +18,8 @@ CREATE TABLE IF NOT EXISTS relationships (
     target_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
     type TEXT NOT NULL,
     properties TEXT NOT NULL DEFAULT '{}',
+    confidence REAL DEFAULT NULL,
+    provenance TEXT DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     UNIQUE(source_id, target_id, type)
 );
@@ -24,6 +28,8 @@ CREATE TABLE IF NOT EXISTS observations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     content TEXT NOT NULL,
     metadata TEXT NOT NULL DEFAULT '{}',
+    confidence REAL DEFAULT NULL,
+    provenance TEXT DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );
 

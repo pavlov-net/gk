@@ -23,6 +23,8 @@ class EntityInput(BaseModel):
     name: str
     type: str
     properties: dict[str, str] = {}
+    confidence: float | None = None
+    provenance: str | None = None
 
 
 class EntityUpdate(BaseModel):
@@ -33,6 +35,8 @@ class EntityUpdate(BaseModel):
     new_name: str | None = None
     new_type: str | None = None
     new_properties: dict[str, str] | None = None
+    new_confidence: float | None = None
+    new_provenance: str | None = None
 
 
 class RelationshipInput(BaseModel):
@@ -42,6 +46,8 @@ class RelationshipInput(BaseModel):
     target: str
     type: str
     properties: dict[str, str] = {}
+    confidence: float | None = None
+    provenance: str | None = None
 
 
 class RelationshipUpdate(BaseModel):
@@ -52,6 +58,8 @@ class RelationshipUpdate(BaseModel):
     type: str
     new_type: str | None = None
     new_properties: dict[str, str] | None = None
+    new_confidence: float | None = None
+    new_provenance: str | None = None
 
 
 class ObservationInput(BaseModel):
@@ -60,6 +68,8 @@ class ObservationInput(BaseModel):
     content: str
     entity_names: list[str] = []
     metadata: dict[str, str] = {}
+    confidence: float | None = None
+    provenance: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +98,23 @@ class DeleteResult(BaseModel):
     errors: list[str] = []
 
 
+class MergeResult(BaseModel):
+    """Result of an entity merge operation."""
+
+    merged: int = 0
+    relationships_transferred: int = 0
+    observations_transferred: int = 0
+    errors: list[str] = []
+
+
+class ChunkResult(BaseModel):
+    """Result of a chunked observation add."""
+
+    observation_ids: list[int] = []
+    chunk_count: int = 0
+    errors: list[str] = []
+
+
 # ---------------------------------------------------------------------------
 # Tool outputs — search
 # ---------------------------------------------------------------------------
@@ -102,10 +129,51 @@ class SearchResult(BaseModel):
     score: float
 
 
+class SearchFacets(BaseModel):
+    """Aggregation counts for search results."""
+
+    entity_types: dict[str, int] = {}
+    relationship_types: dict[str, int] = {}
+
+
 class SearchResults(BaseModel):
     """Collection of search results."""
 
     results: list[SearchResult] = []
+    total: int = 0
+    facets: SearchFacets | None = None
+
+
+class EntitySearchResult(BaseModel):
+    """A single entity search hit."""
+
+    name: str
+    type: str
+    properties: dict[str, str] = {}
+    score: float
+
+
+class EntitySearchResults(BaseModel):
+    """Collection of entity search results."""
+
+    results: list[EntitySearchResult] = []
+    total: int = 0
+
+
+class RelationshipSearchResult(BaseModel):
+    """A single relationship search hit."""
+
+    source: str
+    target: str
+    type: str
+    properties: dict[str, str] = {}
+    score: float
+
+
+class RelationshipSearchResults(BaseModel):
+    """Collection of relationship search results."""
+
+    results: list[RelationshipSearchResult] = []
     total: int = 0
 
 
@@ -209,3 +277,102 @@ class TypeCounts(BaseModel):
     """All entity types and their counts."""
 
     types: list[TypeCount] = []
+
+
+# ---------------------------------------------------------------------------
+# Tool outputs — graph intelligence
+# ---------------------------------------------------------------------------
+
+
+class SubgraphEntity(BaseModel):
+    """An entity in an extracted subgraph."""
+
+    name: str
+    type: str
+    properties: dict[str, str] = {}
+    depth: int
+
+
+class Subgraph(BaseModel):
+    """Extracted subgraph with entities and relationships."""
+
+    entities: list[SubgraphEntity] = []
+    relationships: list[RelationshipDetail] = []
+    seed_entities: list[str] = []
+
+
+class CentralityResult(BaseModel):
+    """Centrality score for a single entity."""
+
+    name: str
+    type: str
+    score: float
+
+
+class CentralityResults(BaseModel):
+    """Collection of centrality scores."""
+
+    metric: str
+    results: list[CentralityResult] = []
+
+
+class TimelineEntry(BaseModel):
+    """A single entry in a chronological timeline."""
+
+    observation_id: int
+    content_snippet: str
+    entity_names: list[str]
+    created_at: str
+
+
+class Timeline(BaseModel):
+    """Chronologically ordered observations."""
+
+    entries: list[TimelineEntry] = []
+
+
+# ---------------------------------------------------------------------------
+# Tool outputs — agent experience
+# ---------------------------------------------------------------------------
+
+
+class PyramidStats(BaseModel):
+    """Pyramid observation level distribution and staleness."""
+
+    detail_count: int = 0
+    summary_count: int = 0
+    overview_count: int = 0
+    unlabeled_count: int = 0
+    stale_summary_entities: list[str] = []
+    stale_overview_entities: list[str] = []
+
+
+class GraphStats(BaseModel):
+    """Aggregate statistics about the knowledge graph."""
+
+    entity_count: int
+    relationship_count: int
+    observation_count: int
+    entity_types: dict[str, int]
+    relationship_types: dict[str, int]
+    avg_relationships_per_entity: float
+    avg_observations_per_entity: float
+    entities_without_observations: int
+    orphan_observations: int
+    pyramid: PyramidStats | None = None
+
+
+class ValidationIssue(BaseModel):
+    """A single validation finding."""
+
+    severity: str  # "warning" | "error"
+    category: str
+    message: str
+    entity_names: list[str] = []
+
+
+class ValidationResults(BaseModel):
+    """Results of graph validation checks."""
+
+    issues: list[ValidationIssue] = []
+    summary: str

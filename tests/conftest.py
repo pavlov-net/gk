@@ -69,6 +69,12 @@ async def db(config: Config) -> AsyncIterator[aiosqlite.Connection]:
             embedding BLOB
         )"""
     )
+    await conn.execute(
+        """CREATE TABLE IF NOT EXISTS relationship_embeddings (
+            relationship_id INTEGER PRIMARY KEY,
+            embedding BLOB
+        )"""
+    )
 
     # Populate metadata
     await conn.execute(

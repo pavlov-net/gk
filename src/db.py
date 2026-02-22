@@ -52,6 +52,10 @@ async def _create_vec_tables(db: aiosqlite.Connection, dim: int) -> None:
         f"CREATE VIRTUAL TABLE IF NOT EXISTS entity_embeddings USING vec0("
         f"entity_id INTEGER PRIMARY KEY, embedding float[{dim}])"
     )
+    await db.execute(
+        f"CREATE VIRTUAL TABLE IF NOT EXISTS relationship_embeddings USING vec0("
+        f"relationship_id INTEGER PRIMARY KEY, embedding float[{dim}])"
+    )
 
 
 async def _validate_metadata(db: aiosqlite.Connection, config: Config) -> None:

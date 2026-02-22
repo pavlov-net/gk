@@ -20,6 +20,20 @@ def entity_embedding_text(name: str, entity_type: str, properties: dict[str, str
     return text
 
 
+def relationship_embedding_text(
+    source: str, rel_type: str, target: str, properties: dict[str, str]
+) -> str:
+    """Format relationship data into a string suitable for embedding.
+
+    Example: "Alice KNOWS Bob - since: childhood, trust: high"
+    """
+    text = f"{source} {rel_type} {target}"
+    if properties:
+        props = ", ".join(f"{k}: {v}" for k, v in properties.items())
+        text += f" - {props}"
+    return text
+
+
 async def embed_texts(texts: list[str], config: Config) -> list[list[float]]:
     """Embed a batch of texts using LiteLLM. Handles sub-batching for large inputs."""
     if not texts:
