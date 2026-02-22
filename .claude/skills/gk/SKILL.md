@@ -4,30 +4,33 @@ description: >-
   This skill should be used when working with the gk knowledge graph MCP server —
   "extract knowledge", "add to the graph", "query the graph", "search the knowledge graph",
   "maintain the graph", "validate graph quality", "pyramid observations", "graph maintenance".
-  Provides workflow orchestration that delegates to gk's MCP prompts for domain guidance.
+  Provides workflow orchestration with guides available as MCP resources.
 ---
 
 # Working with gk Knowledge Graph
 
 gk is an MCP server providing 24 tools for building, searching, and analyzing
-knowledge graphs. The server ships with MCP prompts containing canonical domain
-guidance — always fetch those rather than relying on remembered patterns.
+knowledge graphs. The server ships with guide resources containing canonical
+domain guidance — always read those rather than relying on remembered patterns.
 
 ## Discovering gk Capabilities
 
 On first connection or when unsure about available tools:
 
 1. Check `list_entity_types` and `get_stats` to understand the current graph state
-2. Run `prompts/list` to discover available extraction and review guides
-3. Use `prompts/get` to fetch the relevant prompt before starting work
+2. Read the relevant guide resource before starting work:
+   - `gk://guides/extraction` — entity/relationship extraction from text
+   - `gk://guides/pyramid` — hierarchical observation levels
+   - `gk://guides/query` — searching and exploring the graph
+   - `gk://guides/review` — reviewing and improving graph quality
 
 ## Workflow: Extracting Knowledge
 
 When extracting structured knowledge from text into the graph:
 
-1. Fetch the `extraction_guide` prompt — follow its steps in order
-2. If using hierarchical observations (detail/summary/overview), also fetch
-   `pyramid_extraction` for the three-level pattern and freshness guidance
+1. Read resource `gk://guides/extraction` from server `gk` — follow its steps in order
+2. If using hierarchical observations (detail/summary/overview), also read
+   resource `gk://guides/pyramid` from server `gk` for the three-level pattern and freshness guidance
 3. Prefer batch operations — send multiple entities/relationships/observations
    per call rather than one at a time
 
@@ -39,7 +42,7 @@ match existing conventions.
 
 When searching or exploring an existing knowledge graph:
 
-1. Fetch the `query_guide` prompt — it covers search tool selection,
+1. Read resource `gk://guides/query` from server `gk` — it covers search tool selection,
    filtering, graph traversal, and query strategies
 2. Always start with `list_entity_types` and `get_stats` to orient
 3. Search results return truncated snippets — call `read_observation`
@@ -49,7 +52,7 @@ When searching or exploring an existing knowledge graph:
 
 When maintaining or improving graph quality:
 
-1. Fetch the `review_and_refine` prompt — follow its steps
+1. Read resource `gk://guides/review` from server `gk` — follow its steps
 2. Run `validate_graph` to surface issues automatically:
    - Island entities, orphan observations, duplicate candidates
    - Stale summaries/overviews (pyramid freshness)

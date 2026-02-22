@@ -105,7 +105,7 @@ Search to find relevant observations, read for full text, traverse for structure
 Use validate_graph periodically to check quality. Use merge_entities to consolidate duplicates.
 All observations and entities support optional confidence (0-1) and provenance tracking.
 
-**Prompts:** Use `prompts/list` to discover extraction guides and review workflows.
+**Guides:** Read resources `gk://guides/extraction`, `gk://guides/pyramid`, `gk://guides/query`, `gk://guides/review` for workflow guidance.
 """,
 )
 
@@ -517,6 +517,51 @@ def review_and_refine() -> str:
 @mcp.prompt()
 def query_guide() -> str:
     """Guide for querying and exploring an existing knowledge graph."""
+    return _load_prompt("query_guide.md")
+
+
+# ---------------------------------------------------------------------------
+# MCP Resources — same guides, readable programmatically by agents
+# ---------------------------------------------------------------------------
+
+
+@mcp.resource(
+    "gk://guides/extraction",
+    name="extraction_guide",
+    description="Guide for extracting entities and relationships from text.",
+    mime_type="text/markdown",
+)
+def extraction_guide_resource() -> str:
+    return _load_prompt("extraction_guide.md")
+
+
+@mcp.resource(
+    "gk://guides/pyramid",
+    name="pyramid_extraction",
+    description="Hierarchical observation pattern: detail, summary, overview levels.",
+    mime_type="text/markdown",
+)
+def pyramid_extraction_resource() -> str:
+    return _load_prompt("pyramid_extraction.md")
+
+
+@mcp.resource(
+    "gk://guides/review",
+    name="review_and_refine",
+    description="Guide for reviewing and improving graph quality.",
+    mime_type="text/markdown",
+)
+def review_and_refine_resource() -> str:
+    return _load_prompt("review_and_refine.md")
+
+
+@mcp.resource(
+    "gk://guides/query",
+    name="query_guide",
+    description="Guide for querying and exploring an existing knowledge graph.",
+    mime_type="text/markdown",
+)
+def query_guide_resource() -> str:
     return _load_prompt("query_guide.md")
 
 
