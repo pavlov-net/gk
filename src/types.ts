@@ -29,7 +29,7 @@ export type EntityRow = z.infer<typeof EntityRow>;
 export const EntityInput = z.object({
   name: z.string().min(1),
   type: z.string().min(1),
-  properties: z.record(z.unknown()).optional(),
+  properties: z.record(z.string(), z.unknown()).optional(),
   confidence: z.number().min(0).max(1).optional(),
   staleness_tier: StalenessTier.optional(),
 });
@@ -52,7 +52,7 @@ export type ObservationRow = z.infer<typeof ObservationRow>;
 export const ObservationInput = z.object({
   content: z.string().min(1),
   entity_names: z.array(z.string().min(1)).min(1),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   confidence: z.number().min(0).max(1).optional(),
   source: z.string().optional(),
 });
@@ -78,7 +78,7 @@ export const RelationshipInput = z.object({
   from_entity: z.string().min(1),
   to_entity: z.string().min(1),
   type: z.string().min(1),
-  properties: z.record(z.unknown()).optional(),
+  properties: z.record(z.string(), z.unknown()).optional(),
   confidence: z.number().min(0).max(1).optional(),
 });
 export type RelationshipInput = z.infer<typeof RelationshipInput>;
