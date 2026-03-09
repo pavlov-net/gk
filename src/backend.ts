@@ -217,6 +217,19 @@ const MYSQL_SCHEMA = [
   )`,
 ];
 
+// ── Sanitize FTS5 query ───────────────────────────────────────
+
+function sanitizeFts5(query: string): string {
+  // Wrap each whitespace-delimited token in double quotes so FTS5
+  // treats special characters (apostrophes, hyphens, etc.) as literals.
+  // Double quotes inside tokens are escaped by doubling them.
+  return query
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => `"${token.replace(/"/g, '""')}"`)
+    .join(" ");
+}
+
 // ── Convert ? placeholders to $N for Bun.SQL ─────────────────
 
 function toPositionalParams(sql: string): string {
@@ -356,8 +369,10 @@ export class GraphDB implements Backend {
     const limit = options?.limit ?? 20;
 
     if (this.dialect === "sqlite") {
+      const safeQuery = sanitizeFts5(query);
+      if (!safeQuery) return [];
       const conditions: string[] = ["observations_fts MATCH ?"];
-      const params: unknown[] = [query];
+      const params: unknown[] = [safeQuery];
 
       if (options?.entityTypes?.length) {
         const ph = options.entityTypes.map(() => "?").join(", ");
@@ -431,6 +446,8 @@ export class GraphDB implements Backend {
     const limit = options?.limit ?? 20;
 
     if (this.dialect === "sqlite") {
+      const safeQuery = sanitizeFts5(query);
+      if (!safeQuery) return [];
       const typeClause = options?.types?.length
         ? `AND e.type IN (${options.types.map(() => "?").join(", ")})`
         : "";
@@ -442,7 +459,7 @@ export class GraphDB implements Backend {
            ${typeClause}
          ORDER BY score DESC
          LIMIT ?`,
-        [query, ...(options?.types ?? []), limit],
+        [safeQuery, ...(options?.types ?? []), limit],
       );
     }
 
