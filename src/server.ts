@@ -618,7 +618,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     "validate_graph",
     {
       description:
-        "Check graph health: island entities (no relationships), orphan observations (no entity links), entities missing observations.",
+        "Check graph health: island entities (no relationships), orphan observations (no entity links), entities missing observations, duplicate candidates (same name, different types). Returns structured issues with severity/category.",
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async () => {

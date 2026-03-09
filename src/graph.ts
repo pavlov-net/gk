@@ -1085,11 +1085,19 @@ export async function getStats(backend: Backend): Promise<{
   };
 }
 
+export interface ValidationIssue {
+  severity: "warning" | "error";
+  category: string;
+  message: string;
+  entity_names: string[];
+}
+
 export async function validateGraph(backend: Backend): Promise<{
-  islands: string[];
-  orphanObservations: string[];
-  missingObservations: string[];
+  issues: ValidationIssue[];
+  summary: string;
 }> {
+  const issues: ValidationIssue[] = [];
+
   // Islands: entities with no relationships
   const islands = await backend.all<{ name: string }>(
     `SELECT e.name FROM entities e
@@ -1099,22 +1107,72 @@ export async function validateGraph(backend: Backend): Promise<{
        SELECT to_entity FROM relationships
      )`,
   );
+  for (const e of islands) {
+    issues.push({
+      severity: "warning",
+      category: "island_entity",
+      message: `Entity "${e.name}" has no relationships`,
+      entity_names: [e.name],
+    });
+  }
 
   // Orphan observations: no entity links
   const orphans = await backend.all<{ id: string }>(
     `SELECT o.id FROM observations o
      WHERE o.id NOT IN (SELECT observation_id FROM observation_entities)`,
   );
+  for (const o of orphans) {
+    issues.push({
+      severity: "warning",
+      category: "orphan_observation",
+      message: `Observation "${o.id}" has no entity links`,
+      entity_names: [],
+    });
+  }
 
   // Entities with zero observations
   const missing = await backend.all<{ name: string }>(
     `SELECT e.name FROM entities e
      WHERE e.id NOT IN (SELECT entity_id FROM observation_entities)`,
   );
+  for (const e of missing) {
+    issues.push({
+      severity: "warning",
+      category: "missing_observations",
+      message: `Entity "${e.name}" has no observations`,
+      entity_names: [e.name],
+    });
+  }
 
-  return {
-    islands: islands.map((e) => e.name),
-    orphanObservations: orphans.map((o) => o.id),
-    missingObservations: missing.map((e) => e.name),
-  };
+  // Duplicate candidates: same name, different types
+  const duplicates = await backend.all<{
+    name: string;
+    type_count: number;
+    types: string;
+  }>(
+    `SELECT name, COUNT(DISTINCT type) as type_count, GROUP_CONCAT(DISTINCT type) as types
+     FROM entities GROUP BY name HAVING type_count > 1`,
+  );
+  for (const d of duplicates) {
+    issues.push({
+      severity: "warning",
+      category: "duplicate_candidate",
+      message: `Entity "${d.name}" exists with ${d.type_count} types: ${d.types}`,
+      entity_names: [d.name],
+    });
+  }
+
+  // Build summary
+  const counts: Record<string, number> = {};
+  for (const issue of issues) {
+    counts[issue.category] = (counts[issue.category] ?? 0) + 1;
+  }
+  const summary =
+    issues.length === 0
+      ? "No issues found."
+      : `Found ${issues.length} issues: ${Object.entries(counts)
+          .map(([k, v]) => `${v} ${k}`)
+          .join(", ")}`;
+
+  return { issues, summary };
 }

@@ -399,8 +399,52 @@ describe("validateGraph", () => {
     ]);
 
     const validation = await validateGraph(db);
-    expect(validation.islands).toContain("Island");
-    expect(validation.islands).not.toContain("Connected");
-    expect(validation.missingObservations).toHaveLength(3); // none have observations
+    const islandIssues = validation.issues.filter(
+      (i) => i.category === "island_entity",
+    );
+    const islandNames = islandIssues.map((i) => i.entity_names[0]);
+    expect(islandNames).toContain("Island");
+    expect(islandNames).not.toContain("Connected");
+
+    const missingIssues = validation.issues.filter(
+      (i) => i.category === "missing_observations",
+    );
+    expect(missingIssues).toHaveLength(3);
+    expect(validation.summary).toContain("issues");
+  });
+
+  test("detects duplicate candidates", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "React", type: "library" },
+      { name: "React", type: "framework" },
+    ]);
+
+    const validation = await validateGraph(db);
+    const dups = validation.issues.filter(
+      (i) => i.category === "duplicate_candidate",
+    );
+    expect(dups).toHaveLength(1);
+    expect(dups[0]!.message).toContain("React");
+    expect(dups[0]!.message).toContain("2 types");
+  });
+
+  test("returns no issues for clean graph", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "A", to_entity: "B", type: "uses" },
+    ]);
+    await addObservations(db, [
+      { content: "A does stuff", entity_names: ["A"] },
+      { content: "B does stuff", entity_names: ["B"] },
+    ]);
+
+    const validation = await validateGraph(db);
+    expect(validation.issues).toHaveLength(0);
+    expect(validation.summary).toBe("No issues found.");
   });
 });

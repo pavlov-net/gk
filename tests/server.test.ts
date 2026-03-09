@@ -209,7 +209,10 @@ describe("MCP Server", () => {
     const validation = JSON.parse(
       (result.content as Array<{ text: string }>)[0]!.text,
     );
-    expect(validation.islands).toContain("Lonely");
+    const islandNames = validation.issues
+      .filter((i: { category: string }) => i.category === "island_entity")
+      .map((i: { entity_names: string[] }) => i.entity_names[0]);
+    expect(islandNames).toContain("Lonely");
   });
 
   test("read_resource returns guide content", async () => {
