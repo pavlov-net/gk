@@ -72,7 +72,6 @@ export interface DoltConfig {
 
 export class DoltBackend implements Backend {
   private pool: mysql.Pool;
-  private config: DoltConfig;
 
   constructor(config: DoltConfig) {
     this.config = config;

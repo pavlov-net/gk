@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 
 export const Config = z.object({
@@ -30,7 +30,7 @@ export const Config = z.object({
 export type Config = z.infer<typeof Config>;
 
 export function loadConfig(overrides?: Partial<Config>): Config {
-  let fileConfig: Record<string, unknown> = {};
+  const fileConfig: Record<string, unknown> = {};
 
   for (const name of ["gk.yml", "gk.yaml"]) {
     if (existsSync(name)) {

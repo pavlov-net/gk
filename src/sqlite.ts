@@ -90,7 +90,7 @@ END;
 export class SqliteBackend implements Backend {
   private db: Database;
 
-  constructor(private path: string) {
+  constructor(path: string) {
     this.db = new Database(path);
   }
 
