@@ -1,7 +1,12 @@
 import type { Backend } from "./backend";
 import type { Config } from "./config";
 import { newId } from "./id";
-import type { EntityInput, EntityRow } from "./types";
+import type {
+  EntityInput,
+  EntityRow,
+  RelationshipInput,
+  RelationshipRow,
+} from "./types";
 
 export interface EntityResult {
   id: string;
@@ -198,4 +203,163 @@ export async function deleteEntities(
   });
 
   return deleted;
+}
+
+// --- Relationship CRUD ---
+
+export interface RelationshipResult {
+  id: string;
+  from_entity: string;
+  to_entity: string;
+  type: string;
+}
+
+async function resolveEntityId(
+  backend: Backend,
+  name: string,
+): Promise<string> {
+  const row = await backend.get<{ id: string }>(
+    "SELECT id FROM entities WHERE name = ?",
+    [name],
+  );
+  if (!row) throw new Error(`Entity not found: ${name}`);
+  return row.id;
+}
+
+export async function addRelationships(
+  backend: Backend,
+  relationships: RelationshipInput[],
+): Promise<RelationshipResult[]> {
+  const results: RelationshipResult[] = [];
+  const ts = new Date().toISOString();
+
+  await backend.transaction(async () => {
+    for (const input of relationships) {
+      const fromId = await resolveEntityId(backend, input.from_entity);
+      const toId = await resolveEntityId(backend, input.to_entity);
+      const id = newId();
+      const properties = input.properties
+        ? JSON.stringify(input.properties)
+        : "{}";
+      const confidence = input.confidence ?? 0.8;
+
+      await backend.run(
+        `INSERT INTO relationships (id, from_entity, to_entity, type, properties, confidence, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(from_entity, to_entity, type) DO UPDATE SET
+           properties = excluded.properties,
+           confidence = excluded.confidence`,
+        [id, fromId, toId, input.type, properties, confidence, ts],
+      );
+
+      // Get actual ID (may differ if upserted)
+      const row = await backend.get<{ id: string }>(
+        "SELECT id FROM relationships WHERE from_entity = ? AND to_entity = ? AND type = ?",
+        [fromId, toId, input.type],
+      );
+      results.push({
+        id: row!.id,
+        from_entity: input.from_entity,
+        to_entity: input.to_entity,
+        type: input.type,
+      });
+    }
+  });
+
+  return results;
+}
+
+export async function getRelationships(
+  backend: Backend,
+  config: Config,
+  options?: {
+    entity_name?: string;
+    type?: string;
+  },
+): Promise<Array<RelationshipRow & { from_name: string; to_name: string }>> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (options?.entity_name) {
+    conditions.push("(ef.name = ? OR et.name = ?)");
+    params.push(options.entity_name, options.entity_name);
+  }
+  if (options?.type) {
+    conditions.push("r.type = ?");
+    params.push(options.type);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const rows = await backend.all<
+    RelationshipRow & { from_name: string; to_name: string }
+  >(
+    `SELECT r.*, ef.name as from_name, et.name as to_name
+     FROM relationships r
+     JOIN entities ef ON ef.id = r.from_entity
+     JOIN entities et ON et.id = r.to_entity
+     ${where}`,
+    params,
+  );
+
+  // Bump temporal fields on returned relationships
+  if (rows.length > 0) {
+    const ts = new Date().toISOString();
+    for (const row of rows) {
+      const newStrength = Math.min(row.strength + 0.1, 10.0);
+      const newStability = Math.min(
+        row.stability * config.stability_growth,
+        config.max_stability,
+      );
+      await backend.run(
+        `UPDATE relationships SET
+          strength = ?,
+          access_count = access_count + 1,
+          stability = ?,
+          last_accessed = ?
+        WHERE id = ?`,
+        [newStrength, newStability, ts, row.id],
+      );
+    }
+  }
+
+  return rows;
+}
+
+export async function updateRelationships(
+  backend: Backend,
+  updates: Array<{
+    id: string;
+    properties?: Record<string, unknown>;
+    type?: string;
+  }>,
+): Promise<number> {
+  let updated = 0;
+
+  await backend.transaction(async () => {
+    for (const u of updates) {
+      const sets: string[] = [];
+      const params: unknown[] = [];
+
+      if (u.properties !== undefined) {
+        sets.push("properties = ?");
+        params.push(JSON.stringify(u.properties));
+      }
+      if (u.type !== undefined) {
+        sets.push("type = ?");
+        params.push(u.type);
+      }
+
+      if (sets.length === 0) continue;
+
+      params.push(u.id);
+      const result = await backend.run(
+        `UPDATE relationships SET ${sets.join(", ")} WHERE id = ?`,
+        params,
+      );
+      updated += result.changes;
+    }
+  });
+
+  return updated;
 }
