@@ -963,25 +963,32 @@ export async function getStats(backend: Backend): Promise<{
   tier_distribution: Record<string, number>;
   temporal_health: { durable: number; stable: number; fragile: number };
 }> {
-  const [entityCount] = await backend.all<{ count: number }>(
-    "SELECT COUNT(*) as count FROM entities",
-  );
-  const [relCount] = await backend.all<{ count: number }>(
-    "SELECT COUNT(*) as count FROM relationships",
-  );
-  const [obsCount] = await backend.all<{ count: number }>(
-    "SELECT COUNT(*) as count FROM observations",
+  // Single query: all counts, avg confidence, and temporal health via subqueries
+  const [counts] = await backend.all<{
+    entity_count: number;
+    relationship_count: number;
+    observation_count: number;
+    avg_confidence: number;
+    durable: number;
+    stable: number;
+    fragile: number;
+  }>(
+    `SELECT
+      (SELECT COUNT(*) FROM entities) as entity_count,
+      (SELECT COUNT(*) FROM relationships) as relationship_count,
+      (SELECT COUNT(*) FROM observations) as observation_count,
+      (SELECT AVG(confidence) FROM entities) as avg_confidence,
+      (SELECT COUNT(*) FROM entities WHERE stability > 5) as durable,
+      (SELECT COUNT(*) FROM entities WHERE stability > 1 AND stability <= 5) as stable,
+      (SELECT COUNT(*) FROM entities WHERE stability <= 1) as fragile`,
   );
 
+  // Type distribution (single query, can't easily merge with above)
   const types = await backend.all<{ type: string; count: number }>(
     "SELECT type, COUNT(*) as count FROM entities GROUP BY type",
   );
   const typesMap: Record<string, number> = {};
   for (const t of types) typesMap[t.type] = t.count;
-
-  const [avgConf] = await backend.all<{ avg: number }>(
-    "SELECT AVG(confidence) as avg FROM entities",
-  );
 
   const tiers = await backend.all<{ staleness_tier: string; count: number }>(
     "SELECT staleness_tier, COUNT(*) as count FROM entities GROUP BY staleness_tier",
@@ -989,27 +996,17 @@ export async function getStats(backend: Backend): Promise<{
   const tierMap: Record<string, number> = {};
   for (const t of tiers) tierMap[t.staleness_tier] = t.count;
 
-  const [durable] = await backend.all<{ count: number }>(
-    "SELECT COUNT(*) as count FROM entities WHERE stability > 5",
-  );
-  const [stable] = await backend.all<{ count: number }>(
-    "SELECT COUNT(*) as count FROM entities WHERE stability > 1 AND stability <= 5",
-  );
-  const [fragile] = await backend.all<{ count: number }>(
-    "SELECT COUNT(*) as count FROM entities WHERE stability <= 1",
-  );
-
   return {
-    entity_count: entityCount!.count,
-    relationship_count: relCount!.count,
-    observation_count: obsCount!.count,
+    entity_count: counts!.entity_count,
+    relationship_count: counts!.relationship_count,
+    observation_count: counts!.observation_count,
     types: typesMap,
-    avg_confidence: avgConf!.avg ?? 0,
+    avg_confidence: counts!.avg_confidence ?? 0,
     tier_distribution: tierMap,
     temporal_health: {
-      durable: durable!.count,
-      stable: stable!.count,
-      fragile: fragile!.count,
+      durable: counts!.durable,
+      stable: counts!.stable,
+      fragile: counts!.fragile,
     },
   };
 }

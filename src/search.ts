@@ -19,24 +19,36 @@ export async function searchKeyword(
     limit,
   });
 
-  // Enrich with entity names
-  const results: SearchResult[] = [];
-  for (const r of ftsResults) {
-    const entities = await backend.all<{ name: string }>(
-      `SELECT e.name FROM entities e
-       JOIN observation_entities oe ON oe.entity_id = e.id
-       WHERE oe.observation_id = ?`,
-      [r.id],
-    );
-    results.push({
-      id: r.id,
-      content: r.content,
-      score: r.score,
-      entity_names: entities.map((e) => e.name),
-    });
+  if (ftsResults.length === 0) return [];
+
+  // Batch-fetch entity names for all results in one query
+  const ids = ftsResults.map((r) => r.id);
+  const placeholders = ids.map(() => "?").join(", ");
+  const entityLinks = await backend.all<{
+    observation_id: string;
+    name: string;
+  }>(
+    `SELECT oe.observation_id, e.name
+     FROM observation_entities oe
+     JOIN entities e ON e.id = oe.entity_id
+     WHERE oe.observation_id IN (${placeholders})`,
+    ids,
+  );
+
+  // Group entity names by observation
+  const namesByObs = new Map<string, string[]>();
+  for (const link of entityLinks) {
+    const names = namesByObs.get(link.observation_id) ?? [];
+    names.push(link.name);
+    namesByObs.set(link.observation_id, names);
   }
 
-  return results;
+  return ftsResults.map((r) => ({
+    id: r.id,
+    content: r.content,
+    score: r.score,
+    entity_names: namesByObs.get(r.id) ?? [],
+  }));
 }
 
 export async function searchHybrid(
@@ -53,33 +65,54 @@ export async function searchHybrid(
     limit: limit * 3,
   });
 
-  // Enrich with temporal fields + entity names, compute final score
+  if (ftsResults.length === 0) return [];
+
+  // Batch-fetch temporal fields + entity names in two queries (not N+1)
+  const ids = ftsResults.map((r) => r.id);
+  const placeholders = ids.map(() => "?").join(", ");
+
+  // 1) Temporal fields for all matched observations
+  const temporalRows = await backend.all<{
+    id: string;
+    stability: number;
+    access_count: number;
+    last_accessed: string | null;
+  }>(
+    `SELECT id, stability, access_count, last_accessed
+     FROM observations WHERE id IN (${placeholders})`,
+    ids,
+  );
+  const temporalById = new Map(temporalRows.map((r) => [r.id, r]));
+
+  // 2) Entity names + staleness tiers for all matched observations
+  const entityLinks = await backend.all<{
+    observation_id: string;
+    name: string;
+    staleness_tier: string;
+  }>(
+    `SELECT oe.observation_id, e.name, e.staleness_tier
+     FROM observation_entities oe
+     JOIN entities e ON e.id = oe.entity_id
+     WHERE oe.observation_id IN (${placeholders})`,
+    ids,
+  );
+  const entitiesByObs = new Map<
+    string,
+    Array<{ name: string; staleness_tier: string }>
+  >();
+  for (const link of entityLinks) {
+    const entries = entitiesByObs.get(link.observation_id) ?? [];
+    entries.push({ name: link.name, staleness_tier: link.staleness_tier });
+    entitiesByObs.set(link.observation_id, entries);
+  }
+
+  // Score and rank
   const scored: Array<SearchResult & { finalScore: number }> = [];
-
   for (const r of ftsResults) {
-    // Get temporal fields from observation
-    const obs = await backend.get<{
-      stability: number;
-      access_count: number;
-      last_accessed: string | null;
-    }>(
-      "SELECT stability, access_count, last_accessed FROM observations WHERE id = ?",
-      [r.id],
-    );
-    if (!obs) continue;
+    const temporal = temporalById.get(r.id);
+    if (!temporal) continue;
 
-    // Get linked entities and their staleness tiers
-    const entities = await backend.all<{
-      name: string;
-      staleness_tier: string;
-    }>(
-      `SELECT e.name, e.staleness_tier FROM entities e
-       JOIN observation_entities oe ON oe.entity_id = e.id
-       WHERE oe.observation_id = ?`,
-      [r.id],
-    );
-
-    // Use the highest tier among linked entities
+    const entities = entitiesByObs.get(r.id) ?? [];
     const tier = bestTier(
       entities.map((e) => e.staleness_tier as StalenessTier),
     );
@@ -87,9 +120,9 @@ export async function searchHybrid(
     const finalScore = computeScore(
       {
         fts_score: r.score,
-        stability: obs.stability,
-        last_accessed: obs.last_accessed,
-        access_count: obs.access_count,
+        stability: temporal.stability,
+        last_accessed: temporal.last_accessed,
+        access_count: temporal.access_count,
         staleness_tier: tier,
       },
       config,
@@ -104,31 +137,23 @@ export async function searchHybrid(
     });
   }
 
-  // Sort by final score, take top N
   scored.sort((a, b) => b.finalScore - a.finalScore);
   const topResults = scored.slice(0, limit);
 
-  // Bump access_count/stability on returned observations
-  const ts = new Date().toISOString();
-  for (const r of topResults) {
-    const obs = await backend.get<{ stability: number }>(
-      "SELECT stability FROM observations WHERE id = ?",
-      [r.id],
+  // Batch-bump access_count/stability on returned observations
+  if (topResults.length > 0) {
+    const ts = new Date().toISOString();
+    const topIds = topResults.map((r) => r.id);
+    const topPlaceholders = topIds.map(() => "?").join(", ");
+
+    await backend.run(
+      `UPDATE observations SET
+        access_count = access_count + 1,
+        stability = MIN(stability * ?, ?),
+        last_accessed = ?
+      WHERE id IN (${topPlaceholders})`,
+      [config.stability_growth, config.max_stability, ts, ...topIds],
     );
-    if (obs) {
-      const newStability = Math.min(
-        obs.stability * config.stability_growth,
-        config.max_stability,
-      );
-      await backend.run(
-        `UPDATE observations SET
-          access_count = access_count + 1,
-          stability = ?,
-          last_accessed = ?
-        WHERE id = ?`,
-        [newStability, ts, r.id],
-      );
-    }
   }
 
   return topResults.map(({ finalScore: _, ...rest }) => rest);
