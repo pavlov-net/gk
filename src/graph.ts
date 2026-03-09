@@ -1078,6 +1078,7 @@ export async function getStats(backend: Backend): Promise<{
   orphan_observations: number;
   tier_distribution: Record<string, number>;
   temporal_health: { durable: number; stable: number; fragile: number };
+  embedding_coverage: { total: number; embedded: number };
 }> {
   // Single query: all counts, avg confidence, temporal health, and orphan counts
   const [counts] = await backend.all<{
@@ -1134,6 +1135,9 @@ export async function getStats(backend: Backend): Promise<{
     )`,
   );
 
+  // Embedding coverage
+  const embeddingCoverage = await backend.getEmbeddingCoverage();
+
   const entityCount = counts!.entity_count;
   const relCount = counts!.relationship_count;
 
@@ -1155,6 +1159,7 @@ export async function getStats(backend: Backend): Promise<{
       stable: counts!.stable,
       fragile: counts!.fragile,
     },
+    embedding_coverage: embeddingCoverage,
   };
 }
 

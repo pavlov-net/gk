@@ -383,6 +383,13 @@ describe("getStats", () => {
     expect(stats.orphan_observations).toBe(0);
     expect(stats.temporal_health.fragile).toBe(3); // all stability=1.0
   });
+
+  test("getStats includes embedding coverage", async () => {
+    db = await createTestDb();
+    const stats = await getStats(db);
+    expect(stats).toHaveProperty("embedding_coverage");
+    expect(stats.embedding_coverage).toEqual({ total: 0, embedded: 0 });
+  });
 });
 
 describe("validateGraph", () => {
