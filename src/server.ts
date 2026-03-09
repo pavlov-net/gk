@@ -39,7 +39,52 @@ function text(data: unknown) {
 }
 
 export function createServer(backend: Backend, config: Config): McpServer {
-  const server = new McpServer({ name: "gk", version: "0.2.0" });
+  const server = new McpServer(
+    { name: "gk", version: "0.2.0" },
+    {
+      instructions: `gk is an agentic knowledge graph server. You have 26 tools in 4 tiers:
+
+**Tier 1 -- Build the graph (8 tools):**
+- add_entities, add_relationships, add_observations (batch creation)
+- add_chunked_observation (auto-split long text into linked chunks)
+- update_entities, update_relationships (modify existing)
+- delete_entities (remove with cascade)
+- merge_entities (combine duplicate entities into one)
+
+**Tier 2 -- Search (4 tools):**
+- search_keyword (exact terms, names -- BM25)
+- search_hybrid (combines keyword relevance with temporal scoring -- use when unsure)
+- search_entities (find entities by name)
+- read_observation (full text by ID after finding via search)
+
+**Tier 3 -- Navigate & analyze the graph (10 tools):**
+- get_entity (full profile with relationships and observation summaries)
+- get_entity_profile (rich profile with truncated observations and relationship strength)
+- get_relationships (query edges by entity/type)
+- list_entity_types (see what's in the graph)
+- find_paths (shortest paths between entities)
+- get_neighbors (multi-hop exploration)
+- extract_subgraph (pull out a connected neighborhood)
+- get_centrality (degree or PageRank importance scores)
+- get_timeline (chronological observation history)
+- validate_graph (quality checks -- islands, orphans, duplicates)
+
+**Tier 4 -- Maintenance (4 tools):**
+- get_stats (aggregate graph statistics)
+- prune_stale (find entities with decayed temporal scores)
+- get_health_report (type/tier distribution, access patterns, temporal health)
+- bulk_update_confidence (batch-set confidence for entities)
+
+**Workflow:** Build entities first, then relationships, then observations.
+Search to find relevant observations, read for full text, traverse for structure.
+Use validate_graph periodically to check quality. Use merge_entities to consolidate duplicates.
+All observations and entities support optional confidence (0-1) and source tracking.
+Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
+
+**Guides:** Read resources \`gk://guides/extraction\`, \`gk://guides/pyramid\`,
+\`gk://guides/query\`, \`gk://guides/review\` for workflow guidance.`,
+    },
+  );
 
   // ── Tier 1: Foundation (CRUD) ──────────────────────────────────
 
@@ -49,6 +94,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
       description:
         "Batch-add entities to the knowledge graph. Upserts on (name, type).",
       inputSchema: { entities: z.array(EntityInput) },
+      annotations: { idempotentHint: true },
     },
     async ({ entities }) => {
       return text(await addEntities(backend, entities));
@@ -60,6 +106,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
     {
       description: "Batch-add typed relationships between entities.",
       inputSchema: { relationships: z.array(RelationshipInput) },
+      annotations: { idempotentHint: true },
     },
     async ({ relationships }) => {
       return text(await addRelationships(backend, relationships));
@@ -156,6 +203,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
       description:
         "Delete entities by name. Also removes their relationships and observation links.",
       inputSchema: { names: z.array(z.string()) },
+      annotations: { destructiveHint: true },
     },
     async ({ names }) => {
       return text({ deleted: await deleteEntities(backend, names) });
@@ -173,6 +221,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
           .describe("Entity to merge from (will be deleted)"),
         target_name: z.string().describe("Entity to merge into (will be kept)"),
       },
+      annotations: { destructiveHint: true },
     },
     async ({ source_name, target_name }) => {
       return text(await mergeEntities(backend, source_name, target_name));
@@ -194,6 +243,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
           .describe("Filter by entity types"),
         limit: z.number().optional().describe("Max results (default 20)"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) => {
       return text(
@@ -218,6 +268,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
           .describe("Filter by entity types"),
         limit: z.number().optional().describe("Max results (default 20)"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) => {
       return text(
@@ -237,6 +288,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
       inputSchema: {
         id: z.string().describe("Observation ID"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ id }) => {
       const obs = await readObservation(backend, id, config);
@@ -262,6 +314,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
           .describe("Filter by entity types"),
         limit: z.number().optional().describe("Max results (default 20)"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) => {
       return text(
@@ -283,6 +336,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
       inputSchema: {
         name: z.string().describe("Entity name"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ name }) => {
       const entity = await getEntity(backend, name, config);
@@ -308,6 +362,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
           .optional()
           .describe("Truncate observations to this length (default 200)"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) => {
       const profile = await getEntityProfile(backend, args.name, config, {
@@ -335,6 +390,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
           .describe("Filter by entity name (source or target)"),
         type: z.string().optional().describe("Filter by relationship type"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) => {
       return text(
@@ -350,6 +406,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
     "list_entity_types",
     {
       description: "List all entity types with their counts.",
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async () => {
       return text(await listEntityTypes(backend));
@@ -369,6 +426,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
           .optional()
           .describe("Max path length (default 5)"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) => {
       return text(
@@ -395,6 +453,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
           .optional()
           .describe("Max total neighbors (default 50)"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) => {
       const neighbors = await getNeighbors(backend, args.name, config, {
@@ -428,6 +487,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
           .optional()
           .describe("Max entities to collect (default 100)"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) => {
       return text(
@@ -451,6 +511,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
           .describe("Centrality metric (default degree)"),
         limit: z.number().optional().describe("Top N results (default 20)"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) => {
       return text(
@@ -473,6 +534,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
         limit: z.number().optional().describe("Max results (default 50)"),
         offset: z.number().optional().describe("Pagination offset (default 0)"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) => {
       return text(
@@ -493,6 +555,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
     {
       description:
         "Graph statistics: entity/relationship/observation counts, type distribution, tier distribution, temporal health.",
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async () => {
       return text(await getStats(backend));
@@ -504,6 +567,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
     {
       description:
         "Check graph health: island entities (no relationships), orphan observations (no entity links), entities missing observations.",
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async () => {
       return text(await validateGraph(backend));
@@ -523,6 +587,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
             "Score threshold (default 0.1). Entities below this are stale.",
           ),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) => {
       return text(
@@ -536,6 +601,7 @@ export function createServer(backend: Backend, config: Config): McpServer {
     {
       description:
         "Detailed health report: type/tier distribution, most/least accessed, temporal health breakdown.",
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async () => {
       return text(await getHealthReport(backend));
