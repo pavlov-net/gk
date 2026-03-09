@@ -12,13 +12,13 @@ import {
   validateGraph,
 } from "../src/graph";
 import { addObservations } from "../src/observations";
-import type { SqliteBackend } from "../src/sqlite";
+import type { GraphDB } from "../src/backend";
 import { createTestDb } from "./helpers";
 
 const config = loadConfig();
 
 describe("getNeighbors", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();
@@ -126,7 +126,7 @@ describe("getNeighbors", () => {
 });
 
 describe("findPaths", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();
@@ -206,7 +206,7 @@ describe("findPaths", () => {
 });
 
 describe("extractSubgraph", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();
@@ -233,7 +233,7 @@ describe("extractSubgraph", () => {
 });
 
 describe("getCentrality", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();
@@ -275,7 +275,7 @@ describe("getCentrality", () => {
 });
 
 describe("getTimeline", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();
@@ -350,7 +350,7 @@ describe("getTimeline", () => {
 });
 
 describe("getStats", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();
@@ -386,7 +386,7 @@ describe("getStats", () => {
 });
 
 describe("validateGraph", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();

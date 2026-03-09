@@ -3,13 +3,13 @@ import { loadConfig } from "../src/config";
 import { addEntities, updateEntities } from "../src/graph";
 import { addObservations } from "../src/observations";
 import { searchHybrid, searchKeyword } from "../src/search";
-import type { SqliteBackend } from "../src/sqlite";
+import type { GraphDB } from "../src/backend";
 import { createTestDb } from "./helpers";
 
 const config = loadConfig();
 
 describe("searchKeyword", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();
@@ -115,7 +115,7 @@ describe("searchKeyword", () => {
 });
 
 describe("searchHybrid", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();

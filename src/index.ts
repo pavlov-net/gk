@@ -1,15 +1,13 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { Backend } from "./backend";
+import { type Backend, GraphDB } from "./backend";
 import { type Config, loadConfig } from "./config";
-import { DoltBackend } from "./dolt";
 import { createServer } from "./server";
-import { SqliteBackend } from "./sqlite";
 
 function createBackend(config: Config): Backend {
   if (config.backend === "dolt") {
-    return new DoltBackend({
+    return GraphDB.forMysql({
       host: config.dolt_host,
       port: config.dolt_port,
       database: config.dolt_database,
@@ -17,7 +15,7 @@ function createBackend(config: Config): Backend {
       password: config.dolt_password,
     });
   }
-  return new SqliteBackend(config.db_path);
+  return GraphDB.forSqlite(config.db_path);
 }
 
 async function main() {

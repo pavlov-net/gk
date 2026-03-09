@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { SqliteBackend } from "../src/sqlite";
+import type { GraphDB } from "../src/backend";
 import { createTestDb } from "./helpers";
 
-describe("SqliteBackend", () => {
-  let db: SqliteBackend;
+describe("GraphDB", () => {
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();

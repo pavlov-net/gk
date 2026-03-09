@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { DoltBackend } from "../src/dolt";
+import { GraphDB } from "../src/backend";
 
 const shouldRun = !!process.env.GK_DOLT_HOST;
 
 describe.skipIf(!shouldRun)("DoltBackend", () => {
-  let db: DoltBackend;
+  let db: GraphDB;
 
   beforeAll(async () => {
-    db = new DoltBackend({
+    db = GraphDB.forMysql({
       host: process.env.GK_DOLT_HOST!,
       port: Number(process.env.GK_DOLT_PORT ?? 3307),
       database: process.env.GK_DOLT_DATABASE ?? "gk_test",

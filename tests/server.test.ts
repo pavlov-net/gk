@@ -3,7 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { loadConfig } from "../src/config";
 import { createServer } from "../src/server";
-import type { SqliteBackend } from "../src/sqlite";
+import type { GraphDB } from "../src/backend";
 import { createTestDb } from "./helpers";
 
 const config = loadConfig();
@@ -20,7 +20,7 @@ async function setup() {
 }
 
 describe("MCP Server", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
   let client: Client;
   let mcpServer: ReturnType<typeof createServer>;
 

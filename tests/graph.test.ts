@@ -13,13 +13,13 @@ import {
   updateRelationships,
 } from "../src/graph";
 import { addObservations } from "../src/observations";
-import type { SqliteBackend } from "../src/sqlite";
+import type { GraphDB } from "../src/backend";
 import { createTestDb } from "./helpers";
 
 const config = loadConfig();
 
 describe("Entity CRUD", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();
@@ -148,7 +148,7 @@ describe("Entity CRUD", () => {
 });
 
 describe("Relationship CRUD", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();
@@ -292,7 +292,7 @@ describe("Relationship CRUD", () => {
 });
 
 describe("Entity Merging", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();
@@ -453,7 +453,7 @@ describe("Entity Merging", () => {
 });
 
 describe("Entity Profiles", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();
@@ -505,7 +505,7 @@ describe("Entity Profiles", () => {
 });
 
 describe("listEntityTypes", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();

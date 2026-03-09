@@ -6,13 +6,13 @@ import {
   getHealthReport,
   pruneStale,
 } from "../src/maintenance";
-import type { SqliteBackend } from "../src/sqlite";
+import type { GraphDB } from "../src/backend";
 import { createTestDb } from "./helpers";
 
 const config = loadConfig();
 
 describe("pruneStale", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();
@@ -55,7 +55,7 @@ describe("pruneStale", () => {
 });
 
 describe("getHealthReport", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();
@@ -78,7 +78,7 @@ describe("getHealthReport", () => {
 });
 
 describe("bulkUpdateConfidence", () => {
-  let db: SqliteBackend;
+  let db: GraphDB;
 
   afterEach(async () => {
     if (db) await db.close();

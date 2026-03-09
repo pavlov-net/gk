@@ -1,11 +1,7 @@
-import { SqliteBackend } from "../src/sqlite";
+import { GraphDB } from "../src/backend";
 
-export async function createTestDb(): Promise<SqliteBackend> {
-  const backend = new SqliteBackend(":memory:");
+export async function createTestDb(): Promise<GraphDB> {
+  const backend = GraphDB.forSqlite(":memory:");
   await backend.initialize();
   return backend;
-}
-
-export function now(): string {
-  return new Date().toISOString();
 }
