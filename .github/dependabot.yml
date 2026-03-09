@@ -11,7 +11,7 @@ updates:
         patterns:
           - "*"
 
-  - package-ecosystem: "uv"
+  - package-ecosystem: "bun"
     directory: "/"
     schedule:
       interval: "daily"
