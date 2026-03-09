@@ -23,4 +23,13 @@ describe("loadConfig", () => {
     expect(config.tier_weights.summary).toBe(0.7);
     expect(config.tier_weights.detail).toBe(0.4);
   });
+
+  test("defaults include embedding config", () => {
+    const config = loadConfig();
+    expect(config.embedding_model).toBe("nomic-embed-text");
+    expect(config.embedding_dimensions).toBe(768);
+    expect(config.ollama_url).toBe("http://localhost:11434");
+    expect(config.keyword_weight).toBe(0.6);
+    expect(config.semantic_weight).toBe(0.4);
+  });
 });
