@@ -140,40 +140,46 @@ export class DoltBackend implements Backend {
 
   async searchObservations(
     query: string,
-    options?: { entityTypes?: string[]; limit?: number },
+    options?: {
+      entityTypes?: string[];
+      metadataFilters?: Record<string, string>;
+      limit?: number;
+    },
   ): Promise<FTSResult[]> {
     const limit = options?.limit ?? 20;
+    const conditions: string[] = [
+      "MATCH(o.content) AGAINST(? IN NATURAL LANGUAGE MODE)",
+    ];
+    const params: unknown[] = [query, query];
 
     if (options?.entityTypes?.length) {
       const placeholders = options.entityTypes.map(() => "?").join(", ");
-      const sql = `
-        SELECT o.id, o.content, MATCH(o.content) AGAINST(? IN NATURAL LANGUAGE MODE) as score
-        FROM observations o
-        WHERE MATCH(o.content) AGAINST(? IN NATURAL LANGUAGE MODE)
-          AND o.id IN (
-            SELECT oe.observation_id FROM observation_entities oe
-            JOIN entities e ON e.id = oe.entity_id
-            WHERE e.type IN (${placeholders})
-          )
-        ORDER BY score DESC
-        LIMIT ?
-      `;
-      return this.all<FTSResult>(sql, [
-        query,
-        query,
-        ...options.entityTypes,
-        limit,
-      ]);
+      conditions.push(`o.id IN (
+        SELECT oe.observation_id FROM observation_entities oe
+        JOIN entities e ON e.id = oe.entity_id
+        WHERE e.type IN (${placeholders})
+      )`);
+      params.push(...options.entityTypes);
     }
 
+    if (options?.metadataFilters) {
+      for (const [key, value] of Object.entries(options.metadataFilters)) {
+        conditions.push(
+          `JSON_UNQUOTE(JSON_EXTRACT(o.metadata, CONCAT('$.', ?))) = ?`,
+        );
+        params.push(key, value);
+      }
+    }
+
+    params.push(limit);
     const sql = `
       SELECT o.id, o.content, MATCH(o.content) AGAINST(? IN NATURAL LANGUAGE MODE) as score
       FROM observations o
-      WHERE MATCH(o.content) AGAINST(? IN NATURAL LANGUAGE MODE)
+      WHERE ${conditions.join(" AND ")}
       ORDER BY score DESC
       LIMIT ?
     `;
-    return this.all<FTSResult>(sql, [query, query, limit]);
+    return this.all<FTSResult>(sql, params);
   }
 
   async searchEntities(

@@ -44,6 +44,7 @@ export interface Backend {
     query: string,
     options?: {
       entityTypes?: string[];
+      metadataFilters?: Record<string, string>;
       limit?: number;
     },
   ): Promise<FTSResult[]>;

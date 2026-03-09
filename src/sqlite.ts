@@ -144,37 +144,43 @@ export class SqliteBackend implements Backend {
 
   async searchObservations(
     query: string,
-    options?: { entityTypes?: string[]; limit?: number },
+    options?: {
+      entityTypes?: string[];
+      metadataFilters?: Record<string, string>;
+      limit?: number;
+    },
   ): Promise<FTSResult[]> {
     const limit = options?.limit ?? 20;
+    const conditions: string[] = ["observations_fts MATCH ?"];
+    const params: unknown[] = [query];
 
     if (options?.entityTypes?.length) {
       const placeholders = options.entityTypes.map(() => "?").join(", ");
-      const sql = `
-        SELECT o.id, o.content, -bm25(observations_fts) as score
-        FROM observations_fts
-        JOIN observations o ON o.rowid = observations_fts.rowid
-        WHERE observations_fts MATCH ?
-          AND o.id IN (
-            SELECT oe.observation_id FROM observation_entities oe
-            JOIN entities e ON e.id = oe.entity_id
-            WHERE e.type IN (${placeholders})
-          )
-        ORDER BY score DESC
-        LIMIT ?
-      `;
-      return this.all<FTSResult>(sql, [query, ...options.entityTypes, limit]);
+      conditions.push(`o.id IN (
+        SELECT oe.observation_id FROM observation_entities oe
+        JOIN entities e ON e.id = oe.entity_id
+        WHERE e.type IN (${placeholders})
+      )`);
+      params.push(...options.entityTypes);
     }
 
+    if (options?.metadataFilters) {
+      for (const [key, value] of Object.entries(options.metadataFilters)) {
+        conditions.push(`json_extract(o.metadata, '$.' || ?) = ?`);
+        params.push(key, value);
+      }
+    }
+
+    params.push(limit);
     const sql = `
       SELECT o.id, o.content, -bm25(observations_fts) as score
       FROM observations_fts
       JOIN observations o ON o.rowid = observations_fts.rowid
-      WHERE observations_fts MATCH ?
+      WHERE ${conditions.join(" AND ")}
       ORDER BY score DESC
       LIMIT ?
     `;
-    return this.all<FTSResult>(sql, [query, limit]);
+    return this.all<FTSResult>(sql, params);
   }
 
   async searchEntities(

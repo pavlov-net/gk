@@ -49,6 +49,46 @@ describe("searchKeyword", () => {
     expect(results[0]!.entity_names).toContain("DB");
   });
 
+  test("filters by metadata_filters", async () => {
+    db = await createTestDb();
+    await addEntities(db, [{ name: "Book", type: "document" }]);
+    await addObservations(db, [
+      {
+        content: "Chapter 3 discusses advanced patterns",
+        entity_names: ["Book"],
+        metadata: { chapter: "3" },
+      },
+      {
+        content: "Chapter 1 covers the basics of the system",
+        entity_names: ["Book"],
+        metadata: { chapter: "1" },
+      },
+    ]);
+
+    const results = await searchKeyword(db, "chapter", {
+      metadataFilters: { chapter: "3" },
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0]!.content).toContain("advanced patterns");
+  });
+
+  test("metadata_filters with no match returns empty", async () => {
+    db = await createTestDb();
+    await addEntities(db, [{ name: "Book", type: "document" }]);
+    await addObservations(db, [
+      {
+        content: "Chapter 3 discusses advanced patterns",
+        entity_names: ["Book"],
+        metadata: { chapter: "3" },
+      },
+    ]);
+
+    const results = await searchKeyword(db, "chapter", {
+      metadataFilters: { chapter: "99" },
+    });
+    expect(results).toHaveLength(0);
+  });
+
   test("filters by entity types", async () => {
     db = await createTestDb();
     await addEntities(db, [

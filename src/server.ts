@@ -241,6 +241,12 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
           .array(z.string())
           .optional()
           .describe("Filter by entity types"),
+        metadata_filters: z
+          .record(z.string(), z.string())
+          .optional()
+          .describe(
+            "Filter by observation metadata key-value pairs (e.g. {chapter: '3'})",
+          ),
         limit: z.number().optional().describe("Max results (default 20)"),
       },
       annotations: { readOnlyHint: true, idempotentHint: true },
@@ -249,6 +255,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       return text(
         await searchKeyword(backend, args.query, {
           entityTypes: args.entity_types,
+          metadataFilters: args.metadata_filters,
           limit: args.limit,
         }),
       );
@@ -266,6 +273,12 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
           .array(z.string())
           .optional()
           .describe("Filter by entity types"),
+        metadata_filters: z
+          .record(z.string(), z.string())
+          .optional()
+          .describe(
+            "Filter by observation metadata key-value pairs (e.g. {chapter: '3'})",
+          ),
         limit: z.number().optional().describe("Max results (default 20)"),
       },
       annotations: { readOnlyHint: true, idempotentHint: true },
@@ -274,6 +287,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       return text(
         await searchHybrid(backend, args.query, config, {
           entityTypes: args.entity_types,
+          metadataFilters: args.metadata_filters,
           limit: args.limit,
         }),
       );

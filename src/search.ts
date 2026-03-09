@@ -5,6 +5,7 @@ import type { SearchResult, StalenessTier } from "./types";
 
 export interface SearchOptions {
   entityTypes?: string[];
+  metadataFilters?: Record<string, string>;
   limit?: number;
 }
 
@@ -16,6 +17,7 @@ export async function searchKeyword(
   const limit = options?.limit ?? 20;
   const ftsResults = await backend.searchObservations(query, {
     entityTypes: options?.entityTypes,
+    metadataFilters: options?.metadataFilters,
     limit,
   });
 
@@ -62,6 +64,7 @@ export async function searchHybrid(
   // Overfetch for re-ranking headroom
   const ftsResults = await backend.searchObservations(query, {
     entityTypes: options?.entityTypes,
+    metadataFilters: options?.metadataFilters,
     limit: limit * 3,
   });
 
