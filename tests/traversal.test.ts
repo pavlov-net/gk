@@ -1,0 +1,455 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { loadConfig } from "../src/config";
+import {
+  addEntities,
+  addRelationships,
+  extractSubgraph,
+  findPaths,
+  getCentrality,
+  getNeighbors,
+  getStats,
+  getTimeline,
+  validateGraph,
+} from "../src/graph";
+import { addObservations } from "../src/observations";
+import type { GraphDB } from "../src/backend";
+import { createTestDb } from "./helpers";
+
+const config = loadConfig();
+
+describe("getNeighbors", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("returns neighbors grouped by depth", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+      { name: "C", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "A", to_entity: "B", type: "uses" },
+      { from_entity: "B", to_entity: "C", type: "uses" },
+    ]);
+
+    const neighbors = await getNeighbors(db, "A", config, { maxDepth: 2 });
+    expect(neighbors.get(1)!).toHaveLength(1);
+    expect(neighbors.get(1)![0]!.name).toBe("B");
+    expect(neighbors.get(2)!).toHaveLength(1);
+    expect(neighbors.get(2)![0]!.name).toBe("C");
+  });
+
+  test("respects maxDepth", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+      { name: "C", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "A", to_entity: "B", type: "uses" },
+      { from_entity: "B", to_entity: "C", type: "uses" },
+    ]);
+
+    const neighbors = await getNeighbors(db, "A", config, { maxDepth: 1 });
+    expect(neighbors.get(1)!).toHaveLength(1);
+    expect(neighbors.has(2)).toBe(false);
+  });
+
+  test("handles cycles without infinite loop", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+      { name: "C", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "A", to_entity: "B", type: "uses" },
+      { from_entity: "B", to_entity: "C", type: "uses" },
+      { from_entity: "C", to_entity: "A", type: "uses" },
+    ]);
+
+    const neighbors = await getNeighbors(db, "A", config, { maxDepth: 5 });
+    // Bidirectional: B (via A→B) and C (via C→A) are both depth-1 neighbors
+    expect(neighbors.get(1)!).toHaveLength(2);
+    expect(neighbors.has(2)).toBe(false);
+  });
+
+  test("bumps strength on traversed edges", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "A", to_entity: "B", type: "uses" },
+    ]);
+
+    await getNeighbors(db, "A", config, { maxDepth: 1 });
+
+    const row = await db.get<{ strength: number; access_count: number }>(
+      "SELECT strength, access_count FROM relationships WHERE type = 'uses'",
+    );
+    expect(row!.strength).toBeCloseTo(1.1);
+    expect(row!.access_count).toBe(1);
+  });
+
+  test("filters by relationship types", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Auth", type: "component" },
+      { name: "DB", type: "component" },
+      { name: "Logger", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "Auth", to_entity: "DB", type: "depends_on" },
+      { from_entity: "Auth", to_entity: "Logger", type: "logs_to" },
+    ]);
+
+    const neighbors = await getNeighbors(db, "Auth", config, {
+      maxDepth: 1,
+      relationshipTypes: ["depends_on"],
+    });
+    expect(neighbors.get(1)!).toHaveLength(1);
+    expect(neighbors.get(1)![0]!.name).toBe("DB");
+  });
+
+  test("returns empty for missing entity", async () => {
+    db = await createTestDb();
+    const neighbors = await getNeighbors(db, "Nope", config);
+    expect(neighbors.size).toBe(0);
+  });
+});
+
+describe("findPaths", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("finds linear path A→B→C", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+      { name: "C", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "A", to_entity: "B", type: "uses" },
+      { from_entity: "B", to_entity: "C", type: "uses" },
+    ]);
+
+    const paths = await findPaths(db, "A", "C");
+    expect(paths).toHaveLength(1);
+    expect(paths[0]).toEqual(["A", "B", "C"]);
+  });
+
+  test("returns shortest path", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+      { name: "C", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "A", to_entity: "B", type: "uses" },
+      { from_entity: "B", to_entity: "C", type: "uses" },
+      { from_entity: "A", to_entity: "C", type: "direct" },
+    ]);
+
+    const paths = await findPaths(db, "A", "C");
+    expect(paths).toHaveLength(1);
+    expect(paths[0]).toEqual(["A", "C"]);
+  });
+
+  test("handles cycles without infinite loop", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+      { name: "C", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "A", to_entity: "B", type: "uses" },
+      { from_entity: "B", to_entity: "C", type: "uses" },
+      { from_entity: "C", to_entity: "A", type: "uses" },
+    ]);
+
+    const paths = await findPaths(db, "A", "C");
+    expect(paths).toHaveLength(1);
+    // Bidirectional: C is directly reachable from A via the C→A edge
+    expect(paths[0]).toEqual(["A", "C"]);
+  });
+
+  test("returns empty when no path exists", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+    ]);
+    // No relationships
+
+    const paths = await findPaths(db, "A", "B");
+    expect(paths).toHaveLength(0);
+  });
+
+  test("returns empty for missing entities", async () => {
+    db = await createTestDb();
+    const paths = await findPaths(db, "Nope", "Also Nope");
+    expect(paths).toHaveLength(0);
+  });
+});
+
+describe("extractSubgraph", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("extracts entities and relationships from seed", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+      { name: "C", type: "component" },
+      { name: "D", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "A", to_entity: "B", type: "uses" },
+      { from_entity: "B", to_entity: "C", type: "uses" },
+      { from_entity: "C", to_entity: "D", type: "uses" },
+    ]);
+
+    const sub = await extractSubgraph(db, ["A"], { maxDepth: 1 });
+    expect(sub.entities).toHaveLength(2); // A + B
+    expect(sub.relationships).toHaveLength(1); // A→B
+  });
+});
+
+describe("getCentrality", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("degree centrality ranks hub nodes highest", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Hub", type: "component" },
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+      { name: "C", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "Hub", to_entity: "A", type: "uses" },
+      { from_entity: "Hub", to_entity: "B", type: "uses" },
+      { from_entity: "Hub", to_entity: "C", type: "uses" },
+    ]);
+
+    const centrality = await getCentrality(db, { mode: "degree" });
+    expect(centrality[0]!.name).toBe("Hub");
+    expect(centrality[0]!.score).toBe(3);
+  });
+
+  test("pagerank mode returns results", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "A", to_entity: "B", type: "uses" },
+    ]);
+
+    const centrality = await getCentrality(db, { mode: "pagerank" });
+    expect(centrality).toHaveLength(2);
+    expect(centrality[0]!.score).toBeGreaterThan(0);
+  });
+});
+
+describe("getTimeline", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("returns observations ordered by created_at", async () => {
+    db = await createTestDb();
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    await addObservations(db, [
+      { content: "First observation", entity_names: ["Auth"] },
+      { content: "Second observation", entity_names: ["Auth"] },
+    ]);
+
+    const timeline = await getTimeline(db);
+    expect(timeline).toHaveLength(2);
+    expect(timeline[0]!.entity_names).toContain("Auth");
+  });
+
+  test("filters by entity name", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Auth", type: "component" },
+      { name: "DB", type: "component" },
+    ]);
+    await addObservations(db, [
+      { content: "Auth observation", entity_names: ["Auth"] },
+      { content: "DB observation", entity_names: ["DB"] },
+    ]);
+
+    const timeline = await getTimeline(db, { entityName: "Auth" });
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]!.content).toBe("Auth observation");
+  });
+
+  test("filters by plural entity names", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Auth", type: "component" },
+      { name: "DB", type: "component" },
+      { name: "Logger", type: "component" },
+    ]);
+    await addObservations(db, [
+      { content: "Auth observation", entity_names: ["Auth"] },
+      { content: "DB observation", entity_names: ["DB"] },
+      { content: "Logger observation", entity_names: ["Logger"] },
+    ]);
+
+    const timeline = await getTimeline(db, {
+      entityNames: ["Auth", "DB"],
+    });
+    expect(timeline).toHaveLength(2);
+  });
+
+  test("filters by plural entity types", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Auth", type: "component" },
+      { name: "UseJWT", type: "decision" },
+      { name: "Bug123", type: "issue" },
+    ]);
+    await addObservations(db, [
+      { content: "Auth obs", entity_names: ["Auth"] },
+      { content: "JWT decision", entity_names: ["UseJWT"] },
+      { content: "Bug report", entity_names: ["Bug123"] },
+    ]);
+
+    const timeline = await getTimeline(db, {
+      entityTypes: ["component", "decision"],
+    });
+    expect(timeline).toHaveLength(2);
+  });
+});
+
+describe("getStats", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("returns aggregate statistics", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Auth", type: "component" },
+      { name: "DB", type: "component" },
+      { name: "UseJWT", type: "decision" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "Auth", to_entity: "DB", type: "depends_on" },
+    ]);
+    await addObservations(db, [
+      { content: "Auth uses JWT", entity_names: ["Auth"] },
+    ]);
+
+    const stats = await getStats(db);
+    expect(stats.entity_count).toBe(3);
+    expect(stats.relationship_count).toBe(1);
+    expect(stats.observation_count).toBe(1);
+    expect(stats.types.component).toBe(2);
+    expect(stats.types.decision).toBe(1);
+    expect(stats.relationship_types.depends_on).toBe(1);
+    expect(stats.avg_relationships_per_entity).toBeCloseTo(2 / 3);
+    expect(stats.avg_observations_per_entity).toBeCloseTo(1 / 3);
+    expect(stats.entities_without_observations).toBe(2); // DB and UseJWT
+    expect(stats.orphan_observations).toBe(0);
+    expect(stats.temporal_health.fragile).toBe(3); // all stability=1.0
+  });
+});
+
+describe("validateGraph", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("identifies islands and missing observations", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Connected", type: "component" },
+      { name: "Island", type: "component" },
+      { name: "Other", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "Connected", to_entity: "Other", type: "uses" },
+    ]);
+
+    const validation = await validateGraph(db);
+    const islandIssues = validation.issues.filter(
+      (i) => i.category === "island_entity",
+    );
+    const islandNames = islandIssues.map((i) => i.entity_names[0]);
+    expect(islandNames).toContain("Island");
+    expect(islandNames).not.toContain("Connected");
+
+    const missingIssues = validation.issues.filter(
+      (i) => i.category === "missing_observations",
+    );
+    expect(missingIssues).toHaveLength(3);
+    expect(validation.summary).toContain("issues");
+  });
+
+  test("detects duplicate candidates", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "React", type: "library" },
+      { name: "React", type: "framework" },
+    ]);
+
+    const validation = await validateGraph(db);
+    const dups = validation.issues.filter(
+      (i) => i.category === "duplicate_candidate",
+    );
+    expect(dups).toHaveLength(1);
+    expect(dups[0]!.message).toContain("React");
+    expect(dups[0]!.message).toContain("2 types");
+  });
+
+  test("returns no issues for clean graph", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "A", to_entity: "B", type: "uses" },
+    ]);
+    await addObservations(db, [
+      { content: "A does stuff", entity_names: ["A"] },
+      { content: "B does stuff", entity_names: ["B"] },
+    ]);
+
+    const validation = await validateGraph(db);
+    expect(validation.issues).toHaveLength(0);
+    expect(validation.summary).toBe("No issues found.");
+  });
+});
