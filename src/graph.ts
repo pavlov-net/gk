@@ -622,3 +622,135 @@ export async function listEntityTypes(
     "SELECT type, COUNT(*) as count FROM entities GROUP BY type ORDER BY count DESC",
   );
 }
+
+// --- Neighbors + Path Finding ---
+
+export async function getNeighbors(
+  backend: Backend,
+  name: string,
+  config: Config,
+  options?: { maxDepth?: number; maxResults?: number },
+): Promise<Map<number, Array<{ name: string; type: string }>>> {
+  const maxDepth = options?.maxDepth ?? 2;
+  const maxResults = options?.maxResults ?? 50;
+
+  const start = await backend.get<{ id: string }>(
+    "SELECT id FROM entities WHERE name = ?",
+    [name],
+  );
+  if (!start) return new Map();
+
+  const visited = new Set<string>([start.id]);
+  let frontier = [start.id];
+  const result = new Map<number, Array<{ name: string; type: string }>>();
+
+  for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
+    const nextFrontier: string[] = [];
+    const depthEntities: Array<{ name: string; type: string }> = [];
+
+    for (const entityId of frontier) {
+      // Get neighbors via relationships (both directions)
+      const neighbors = await backend.all<{
+        id: string;
+        name: string;
+        type: string;
+        rel_id: string;
+      }>(
+        `SELECT e.id, e.name, e.type, r.id as rel_id FROM relationships r
+         JOIN entities e ON e.id = r.to_entity
+         WHERE r.from_entity = ?
+         UNION
+         SELECT e.id, e.name, e.type, r.id as rel_id FROM relationships r
+         JOIN entities e ON e.id = r.from_entity
+         WHERE r.to_entity = ?`,
+        [entityId, entityId],
+      );
+
+      for (const n of neighbors) {
+        if (!visited.has(n.id)) {
+          visited.add(n.id);
+          nextFrontier.push(n.id);
+          depthEntities.push({ name: n.name, type: n.type });
+
+          // Bump relationship strength on traversed edge
+          const newStability = Math.min(
+            1.0 * config.stability_growth,
+            config.max_stability,
+          );
+          await backend.run(
+            `UPDATE relationships SET
+              strength = MIN(strength + 0.1, 10.0),
+              access_count = access_count + 1,
+              stability = ?,
+              last_accessed = ?
+            WHERE id = ?`,
+            [newStability, new Date().toISOString(), n.rel_id],
+          );
+
+          if (visited.size >= maxResults + 1) break;
+        }
+      }
+      if (visited.size >= maxResults + 1) break;
+    }
+
+    if (depthEntities.length > 0) {
+      result.set(depth, depthEntities);
+    }
+    frontier = nextFrontier;
+  }
+
+  return result;
+}
+
+export async function findPaths(
+  backend: Backend,
+  fromName: string,
+  toName: string,
+  options?: { maxDepth?: number },
+): Promise<string[][]> {
+  const maxDepth = options?.maxDepth ?? 5;
+
+  const from = await backend.get<{ id: string; name: string }>(
+    "SELECT id, name FROM entities WHERE name = ?",
+    [fromName],
+  );
+  const to = await backend.get<{ id: string; name: string }>(
+    "SELECT id, name FROM entities WHERE name = ?",
+    [toName],
+  );
+  if (!from || !to) return [];
+
+  // BFS to find shortest path
+  const queue: Array<{ id: string; path: string[] }> = [
+    { id: from.id, path: [from.name] },
+  ];
+  const visited = new Set<string>([from.id]);
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (current.path.length > maxDepth) continue;
+
+    const neighbors = await backend.all<{ id: string; name: string }>(
+      `SELECT e.id, e.name FROM relationships r
+       JOIN entities e ON e.id = r.to_entity
+       WHERE r.from_entity = ?
+       UNION
+       SELECT e.id, e.name FROM relationships r
+       JOIN entities e ON e.id = r.from_entity
+       WHERE r.to_entity = ?`,
+      [current.id, current.id],
+    );
+
+    for (const n of neighbors) {
+      if (n.id === to.id) {
+        return [[...current.path, n.name]];
+      }
+      if (!visited.has(n.id)) {
+        visited.add(n.id);
+        queue.push({ id: n.id, path: [...current.path, n.name] });
+      }
+    }
+  }
+
+  return [];
+}
