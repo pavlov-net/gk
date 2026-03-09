@@ -6,6 +6,7 @@ import { addEntities } from "../src/graph";
 import {
   addChunkedObservation,
   addObservations,
+  backfillEmbeddings,
   readObservation,
 } from "../src/observations";
 import { createTestDb } from "./helpers";
@@ -185,5 +186,66 @@ describe("addObservations with embedder", () => {
     expect(results).toHaveLength(1);
     const coverage = await db.getEmbeddingCoverage();
     expect(coverage.embedded).toBe(0);
+  });
+});
+
+describe("backfillEmbeddings", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("embeds observations that lack vectors", async () => {
+    db = await createTestDb();
+    const embedder = mockEmbedder();
+
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    await addObservations(db, [
+      { content: "JWT handles tokens", entity_names: ["Auth"] },
+      { content: "OAuth2 flow", entity_names: ["Auth"] },
+    ]);
+
+    const before = await db.getEmbeddingCoverage();
+    expect(before.embedded).toBe(0);
+
+    const result = await backfillEmbeddings(db, embedder);
+    expect(result.embedded).toBe(2);
+    expect(result.skipped).toBe(0);
+
+    const after = await db.getEmbeddingCoverage();
+    expect(after.embedded).toBe(2);
+  });
+
+  test("skips already-embedded observations", async () => {
+    db = await createTestDb();
+    const embedder = mockEmbedder();
+
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    await addObservations(
+      db,
+      [{ content: "JWT handles tokens", entity_names: ["Auth"] }],
+      embedder,
+    );
+
+    const result = await backfillEmbeddings(db, embedder);
+    expect(result.embedded).toBe(0);
+    expect(result.skipped).toBe(1);
+  });
+
+  test("force re-embeds everything", async () => {
+    db = await createTestDb();
+    const embedder = mockEmbedder();
+
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    await addObservations(
+      db,
+      [{ content: "JWT handles tokens", entity_names: ["Auth"] }],
+      embedder,
+    );
+
+    const result = await backfillEmbeddings(db, embedder, { force: true });
+    expect(result.embedded).toBe(1);
+    expect(result.skipped).toBe(0);
   });
 });

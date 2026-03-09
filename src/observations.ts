@@ -138,6 +138,45 @@ export async function addChunkedObservation(
   return addObservations(backend, observations, embedder);
 }
 
+export async function backfillEmbeddings(
+  backend: Backend,
+  embedder: Embedder,
+  options?: { batchSize?: number; force?: boolean },
+): Promise<{ embedded: number; skipped: number; errors: number }> {
+  const batchSize = options?.batchSize ?? 100;
+  let embedded = 0;
+  let errors = 0;
+
+  const query = options?.force
+    ? "SELECT id, content FROM observations ORDER BY created_at"
+    : `SELECT o.id, o.content FROM observations o
+       LEFT JOIN observation_vectors v ON v.observation_id = o.id
+       WHERE v.observation_id IS NULL
+       ORDER BY o.created_at`;
+
+  const rows = await backend.all<{ id: string; content: string }>(query);
+  const total = await backend.get<{ count: number }>(
+    "SELECT COUNT(*) as count FROM observations",
+  );
+  const skipped = (total?.count ?? 0) - rows.length;
+
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const batch = rows.slice(i, i + batchSize);
+    try {
+      const texts = batch.map((r) => r.content);
+      const vectors = await embedder.embed(texts);
+      await backend.storeEmbeddings(
+        batch.map((r, j) => ({ id: r.id, vector: vectors[j]! })),
+      );
+      embedded += batch.length;
+    } catch {
+      errors += batch.length;
+    }
+  }
+
+  return { embedded, skipped, errors };
+}
+
 function splitIntoChunks(text: string, maxSize: number): string[] {
   if (text.length <= maxSize) return [text];
 

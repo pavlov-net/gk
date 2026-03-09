@@ -32,6 +32,7 @@ import {
 import {
   addChunkedObservation,
   addObservations,
+  backfillEmbeddings,
   readObservation,
 } from "./observations";
 import { searchHybrid, searchKeyword } from "./search";
@@ -746,6 +747,46 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       return text({
         updated: await bulkUpdateConfidence(backend, names, confidence),
       });
+    },
+  );
+
+  server.registerTool(
+    "backfill_embeddings",
+    {
+      description:
+        "Temporary migration tool -- embeds observations that don't have vectors yet. Run after upgrading to semantic search or changing embedding models.",
+      inputSchema: {
+        batch_size: z.coerce
+          .number()
+          .optional()
+          .describe("Observations per batch (default 100)"),
+        force: z
+          .boolean()
+          .optional()
+          .describe(
+            "Re-embed all observations, even those with existing vectors (default false)",
+          ),
+      },
+      annotations: { idempotentHint: true },
+    },
+    async (args) => {
+      if (!embedder) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Backfill unavailable: no embedding provider configured",
+            },
+          ],
+          isError: true,
+        };
+      }
+      return text(
+        await backfillEmbeddings(backend, embedder, {
+          batchSize: args.batch_size,
+          force: args.force,
+        }),
+      );
     },
   );
 
