@@ -74,6 +74,10 @@ export function loadConfig(overrides?: Partial<Config>): Config {
   if (process.env.GK_EMBEDDING_DIMENSIONS)
     env.embedding_dimensions = Number(process.env.GK_EMBEDDING_DIMENSIONS);
   if (process.env.GK_OLLAMA_URL) env.ollama_url = process.env.GK_OLLAMA_URL;
+  if (process.env.GK_KEYWORD_WEIGHT)
+    env.keyword_weight = Number(process.env.GK_KEYWORD_WEIGHT);
+  if (process.env.GK_SEMANTIC_WEIGHT)
+    env.semantic_weight = Number(process.env.GK_SEMANTIC_WEIGHT);
 
   return Config.parse({ ...fileConfig, ...env, ...overrides });
 }

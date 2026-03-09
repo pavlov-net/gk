@@ -525,15 +525,28 @@ export class GraphDB implements Backend {
   async storeEmbeddings(
     items: Array<{ id: string; vector: Float32Array }>,
   ): Promise<void> {
-    for (const { id, vector } of items) {
-      if (this.dialect === "sqlite") {
-        this.sqlite!.query(
-          "DELETE FROM observation_vectors WHERE observation_id = ?",
-        ).run(id);
-        this.sqlite!.query(
-          "INSERT INTO observation_vectors (observation_id, embedding) VALUES (?, ?)",
-        ).run(id, vector);
-      } else {
+    if (items.length === 0) return;
+
+    if (this.dialect === "sqlite") {
+      const del = this.sqlite!.query(
+        "DELETE FROM observation_vectors WHERE observation_id = ?",
+      );
+      const ins = this.sqlite!.query(
+        "INSERT INTO observation_vectors (observation_id, embedding) VALUES (?, ?)",
+      );
+      this.sqlite!.run("BEGIN");
+      try {
+        for (const { id, vector } of items) {
+          del.run(id);
+          ins.run(id, vector);
+        }
+        this.sqlite!.run("COMMIT");
+      } catch (e) {
+        this.sqlite!.run("ROLLBACK");
+        throw e;
+      }
+    } else {
+      for (const { id, vector } of items) {
         const vecStr = `[${Array.from(vector).join(",")}]`;
         await this.mysql!.unsafe(
           "INSERT INTO observation_vectors (observation_id, embedding) VALUES ($1, VEC_FromText($2)) ON DUPLICATE KEY UPDATE embedding = VEC_FromText($2)",
@@ -569,15 +582,11 @@ export class GraphDB implements Backend {
   }
 
   async getEmbeddingCoverage(): Promise<{ total: number; embedded: number }> {
-    const total = await this.get<{ count: number }>(
-      "SELECT COUNT(*) as count FROM observations",
+    const row = await this.get<{ total: number; embedded: number }>(
+      `SELECT COUNT(o.id) as total, COUNT(v.observation_id) as embedded
+       FROM observations o
+       LEFT JOIN observation_vectors v ON v.observation_id = o.id`,
     );
-    const embedded = await this.get<{ count: number }>(
-      "SELECT COUNT(*) as count FROM observation_vectors",
-    );
-    return {
-      total: total?.count ?? 0,
-      embedded: embedded?.count ?? 0,
-    };
+    return { total: row?.total ?? 0, embedded: row?.embedded ?? 0 };
   }
 }

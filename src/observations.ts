@@ -147,21 +147,24 @@ export async function backfillEmbeddings(
   let embedded = 0;
   let errors = 0;
 
-  const query = options?.force
+  const baseQuery = options?.force
     ? "SELECT id, content FROM observations ORDER BY created_at"
     : `SELECT o.id, o.content FROM observations o
        LEFT JOIN observation_vectors v ON v.observation_id = o.id
        WHERE v.observation_id IS NULL
        ORDER BY o.created_at`;
 
-  const rows = await backend.all<{ id: string; content: string }>(query);
-  const total = await backend.get<{ count: number }>(
-    "SELECT COUNT(*) as count FROM observations",
-  );
-  const skipped = (total?.count ?? 0) - rows.length;
+  const coverage = await backend.getEmbeddingCoverage();
+  let skipped = options?.force ? 0 : coverage.embedded;
 
-  for (let i = 0; i < rows.length; i += batchSize) {
-    const batch = rows.slice(i, i + batchSize);
+  // Paginated fetch to avoid loading all observations into memory
+  for (let offset = 0; ; offset += batchSize) {
+    const batch = await backend.all<{ id: string; content: string }>(
+      `${baseQuery} LIMIT ? OFFSET ?`,
+      [batchSize, offset],
+    );
+    if (batch.length === 0) break;
+
     try {
       const texts = batch.map((r) => r.content);
       const vectors = await embedder.embed(texts);
@@ -172,6 +175,11 @@ export async function backfillEmbeddings(
     } catch {
       errors += batch.length;
     }
+  }
+
+  // Recalculate skipped for force mode (total - what we processed)
+  if (options?.force) {
+    skipped = coverage.total - embedded - errors;
   }
 
   return { embedded, skipped, errors };

@@ -10,6 +10,32 @@ export interface SearchOptions {
   limit?: number;
 }
 
+function distanceToSimilarity(distance: number): number {
+  return 1 / (1 + distance);
+}
+
+async function fetchEntityNames(
+  backend: Backend,
+  ids: string[],
+): Promise<Map<string, string[]>> {
+  if (ids.length === 0) return new Map();
+  const placeholders = ids.map(() => "?").join(", ");
+  const links = await backend.all<{ observation_id: string; name: string }>(
+    `SELECT oe.observation_id, e.name
+     FROM observation_entities oe
+     JOIN entities e ON e.id = oe.entity_id
+     WHERE oe.observation_id IN (${placeholders})`,
+    ids,
+  );
+  const map = new Map<string, string[]>();
+  for (const link of links) {
+    const names = map.get(link.observation_id) ?? [];
+    names.push(link.name);
+    map.set(link.observation_id, names);
+  }
+  return map;
+}
+
 export async function searchKeyword(
   backend: Backend,
   query: string,
@@ -24,27 +50,10 @@ export async function searchKeyword(
 
   if (ftsResults.length === 0) return [];
 
-  // Batch-fetch entity names for all results in one query
-  const ids = ftsResults.map((r) => r.id);
-  const placeholders = ids.map(() => "?").join(", ");
-  const entityLinks = await backend.all<{
-    observation_id: string;
-    name: string;
-  }>(
-    `SELECT oe.observation_id, e.name
-     FROM observation_entities oe
-     JOIN entities e ON e.id = oe.entity_id
-     WHERE oe.observation_id IN (${placeholders})`,
-    ids,
+  const namesByObs = await fetchEntityNames(
+    backend,
+    ftsResults.map((r) => r.id),
   );
-
-  // Group entity names by observation
-  const namesByObs = new Map<string, string[]>();
-  for (const link of entityLinks) {
-    const names = namesByObs.get(link.observation_id) ?? [];
-    names.push(link.name);
-    namesByObs.set(link.observation_id, names);
-  }
 
   return ftsResults.map((r) => ({
     id: r.id,
@@ -70,23 +79,7 @@ export async function searchSemantic(
   const ids = vecResults.map((r) => r.id);
   const placeholders = ids.map(() => "?").join(", ");
 
-  // Batch-fetch entity names
-  const entityLinks = await backend.all<{
-    observation_id: string;
-    name: string;
-  }>(
-    `SELECT oe.observation_id, e.name
-     FROM observation_entities oe
-     JOIN entities e ON e.id = oe.entity_id
-     WHERE oe.observation_id IN (${placeholders})`,
-    ids,
-  );
-  const namesByObs = new Map<string, string[]>();
-  for (const link of entityLinks) {
-    const names = namesByObs.get(link.observation_id) ?? [];
-    names.push(link.name);
-    namesByObs.set(link.observation_id, names);
-  }
+  const namesByObs = await fetchEntityNames(backend, ids);
 
   // Fetch content
   const obsRows = await backend.all<{ id: string; content: string }>(
@@ -95,11 +88,10 @@ export async function searchSemantic(
   );
   const contentById = new Map(obsRows.map((r) => [r.id, r.content]));
 
-  // Convert distance to similarity score: 1 / (1 + distance)
   let results = vecResults.map((r) => ({
     id: r.id,
     content: contentById.get(r.id) ?? "",
-    score: 1 / (1 + r.distance),
+    score: distanceToSimilarity(r.distance),
     entity_names: namesByObs.get(r.id) ?? [],
   }));
 
@@ -155,7 +147,7 @@ export async function searchHybrid(
       if (queryVector) {
         const vecResults = await backend.searchByVector(queryVector, limit * 3);
         for (const r of vecResults) {
-          semanticScores.set(r.id, 1 / (1 + r.distance));
+          semanticScores.set(r.id, distanceToSimilarity(r.distance));
         }
       }
     } catch {
