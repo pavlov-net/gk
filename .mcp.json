@@ -3,7 +3,7 @@
     "gk": {
       "type": "stdio",
       "command": "bun",
-      "args": ["run", "--bun", "."],
+      "args": ["run", "."],
       "env": {
         "GK_DB_PATH": "./knowledge.db"
       }

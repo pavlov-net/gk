@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "description": "Knowledge graph MCP server with temporal dynamics",
   "type": "module",
-  "bin": { "gk": "./src/index.ts" },
+  "main": "./src/index.ts",
   "files": ["src/"],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.0",
