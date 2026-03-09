@@ -653,6 +653,46 @@ export async function getEntityProfile(
   };
 }
 
+export interface ListEntitiesOptions {
+  types?: string[];
+  limit?: number;
+  offset?: number;
+}
+
+export async function listEntities(
+  backend: Backend,
+  options?: ListEntitiesOptions,
+): Promise<
+  Array<{
+    id: string;
+    name: string;
+    type: string;
+    confidence: number;
+    staleness_tier: string;
+  }>
+> {
+  const limit = options?.limit ?? 100;
+  const offset = options?.offset ?? 0;
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (options?.types?.length) {
+    conditions.push(`type IN (${options.types.map(() => "?").join(", ")})`);
+    params.push(...options.types);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  params.push(limit, offset);
+
+  return backend.all(
+    `SELECT id, name, type, confidence, staleness_tier
+     FROM entities ${where}
+     ORDER BY name ASC
+     LIMIT ? OFFSET ?`,
+    params,
+  );
+}
+
 export async function listEntityTypes(
   backend: Backend,
 ): Promise<Array<{ type: string; count: number }>> {

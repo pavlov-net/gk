@@ -1,6 +1,6 @@
-import pkg from "../package.json";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import pkg from "../package.json";
 import type { Backend } from "./backend";
 import type { Config } from "./config";
 import {
@@ -16,6 +16,7 @@ import {
   getRelationships,
   getStats,
   getTimeline,
+  listEntities,
   listEntityTypes,
   mergeEntities,
   updateEntities,
@@ -367,6 +368,38 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
         await backend.searchEntities(args.query, {
           types: args.types,
           limit: args.limit,
+        }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "list_entities",
+    {
+      description:
+        "List entities, optionally filtered by type. Use this instead of search_entities when you want all entities of a type rather than searching by name.",
+      inputSchema: {
+        types: z
+          .array(z.string())
+          .optional()
+          .describe("Filter by entity types"),
+        limit: z.coerce
+          .number()
+          .optional()
+          .describe("Max results (default 100)"),
+        offset: z.coerce
+          .number()
+          .optional()
+          .describe("Pagination offset (default 0)"),
+      },
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async (args) => {
+      return text(
+        await listEntities(backend, {
+          types: args.types,
+          limit: args.limit,
+          offset: args.offset,
         }),
       );
     },
