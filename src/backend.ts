@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { SQL } from "bun";
 import * as sqliteVec from "sqlite-vec";
 
@@ -9,6 +9,7 @@ export interface FTSResult {
   content: string;
   /** Higher = more relevant */
   score: number;
+  [key: string]: unknown;
 }
 
 export interface FTSEntityResult {
@@ -16,6 +17,7 @@ export interface FTSEntityResult {
   name: string;
   type: string;
   score: number;
+  [key: string]: unknown;
 }
 
 export type Row = Record<string, unknown>;
@@ -332,14 +334,19 @@ export class GraphDB implements Backend {
   async run(sql: string, params?: unknown[]): Promise<{ changes: number }> {
     if (this.sqlite) {
       const stmt = this.sqlite.query(sql);
-      const result = params ? stmt.run(...params) : stmt.run();
+      const result = params
+        ? stmt.run(...(params as SQLQueryBindings[]))
+        : stmt.run();
       return { changes: result.changes };
     }
     const result = await this.mysql!.unsafe(
       toPositionalParams(sql),
-      params as any[],
+      params as unknown[],
     );
-    return { changes: (result as any).affectedRows ?? 0 };
+    return {
+      changes:
+        (result as unknown as { affectedRows?: number }).affectedRows ?? 0,
+    };
   }
 
   async get<T extends Row = Row>(
@@ -348,12 +355,14 @@ export class GraphDB implements Backend {
   ): Promise<T | undefined> {
     if (this.sqlite) {
       const stmt = this.sqlite.query(sql);
-      const row = params ? stmt.get(...params) : stmt.get();
+      const row = params
+        ? stmt.get(...(params as SQLQueryBindings[]))
+        : stmt.get();
       return (row as T | null) ?? undefined;
     }
     const rows = await this.mysql!.unsafe(
       toPositionalParams(sql),
-      params as any[],
+      params as unknown[],
     );
     return (rows[0] as T) ?? undefined;
   }
@@ -364,12 +373,14 @@ export class GraphDB implements Backend {
   ): Promise<T[]> {
     if (this.sqlite) {
       const stmt = this.sqlite.query(sql);
-      const rows = params ? stmt.all(...params) : stmt.all();
+      const rows = params
+        ? stmt.all(...(params as SQLQueryBindings[]))
+        : stmt.all();
       return rows as T[];
     }
     const rows = await this.mysql!.unsafe(
       toPositionalParams(sql),
-      params as any[],
+      params as unknown[],
     );
     return rows as T[];
   }

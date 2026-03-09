@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { GraphDB } from "../src/backend";
 import { loadConfig } from "../src/config";
 import { addEntities } from "../src/graph";
 import {
@@ -6,7 +7,6 @@ import {
   getHealthReport,
   pruneStale,
 } from "../src/maintenance";
-import type { GraphDB } from "../src/backend";
 import { createTestDb } from "./helpers";
 
 const config = loadConfig();
