@@ -376,6 +376,11 @@ describe("getStats", () => {
     expect(stats.observation_count).toBe(1);
     expect(stats.types.component).toBe(2);
     expect(stats.types.decision).toBe(1);
+    expect(stats.relationship_types.depends_on).toBe(1);
+    expect(stats.avg_relationships_per_entity).toBeCloseTo(2 / 3);
+    expect(stats.avg_observations_per_entity).toBeCloseTo(1 / 3);
+    expect(stats.entities_without_observations).toBe(2); // DB and UseJWT
+    expect(stats.orphan_observations).toBe(0);
     expect(stats.temporal_health.fragile).toBe(3); // all stability=1.0
   });
 });

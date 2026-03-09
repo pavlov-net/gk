@@ -1033,11 +1033,16 @@ export async function getStats(backend: Backend): Promise<{
   relationship_count: number;
   observation_count: number;
   types: Record<string, number>;
+  relationship_types: Record<string, number>;
   avg_confidence: number;
+  avg_relationships_per_entity: number;
+  avg_observations_per_entity: number;
+  entities_without_observations: number;
+  orphan_observations: number;
   tier_distribution: Record<string, number>;
   temporal_health: { durable: number; stable: number; fragile: number };
 }> {
-  // Single query: all counts, avg confidence, and temporal health via subqueries
+  // Single query: all counts, avg confidence, temporal health, and orphan counts
   const [counts] = await backend.all<{
     entity_count: number;
     relationship_count: number;
@@ -1046,6 +1051,8 @@ export async function getStats(backend: Backend): Promise<{
     durable: number;
     stable: number;
     fragile: number;
+    entities_without_observations: number;
+    orphan_observations: number;
   }>(
     `SELECT
       (SELECT COUNT(*) FROM entities) as entity_count,
@@ -1054,28 +1061,57 @@ export async function getStats(backend: Backend): Promise<{
       (SELECT AVG(confidence) FROM entities) as avg_confidence,
       (SELECT COUNT(*) FROM entities WHERE stability > 5) as durable,
       (SELECT COUNT(*) FROM entities WHERE stability > 1 AND stability <= 5) as stable,
-      (SELECT COUNT(*) FROM entities WHERE stability <= 1) as fragile`,
+      (SELECT COUNT(*) FROM entities WHERE stability <= 1) as fragile,
+      (SELECT COUNT(*) FROM entities WHERE id NOT IN (SELECT entity_id FROM observation_entities)) as entities_without_observations,
+      (SELECT COUNT(*) FROM observations WHERE id NOT IN (SELECT observation_id FROM observation_entities)) as orphan_observations`,
   );
 
-  // Type distribution (single query, can't easily merge with above)
+  // Entity type distribution
   const types = await backend.all<{ type: string; count: number }>(
     "SELECT type, COUNT(*) as count FROM entities GROUP BY type",
   );
   const typesMap: Record<string, number> = {};
   for (const t of types) typesMap[t.type] = t.count;
 
+  // Relationship type distribution
+  const relTypes = await backend.all<{ type: string; count: number }>(
+    "SELECT type, COUNT(*) as count FROM relationships GROUP BY type",
+  );
+  const relTypesMap: Record<string, number> = {};
+  for (const t of relTypes) relTypesMap[t.type] = t.count;
+
+  // Tier distribution
   const tiers = await backend.all<{ staleness_tier: string; count: number }>(
     "SELECT staleness_tier, COUNT(*) as count FROM entities GROUP BY staleness_tier",
   );
   const tierMap: Record<string, number> = {};
   for (const t of tiers) tierMap[t.staleness_tier] = t.count;
 
+  // Average observations per entity
+  const avgObsRow = await backend.get<{ avg_obs: number }>(
+    `SELECT AVG(cnt) as avg_obs FROM (
+      SELECT COUNT(oe.observation_id) as cnt
+      FROM entities e
+      LEFT JOIN observation_entities oe ON oe.entity_id = e.id
+      GROUP BY e.id
+    )`,
+  );
+
+  const entityCount = counts!.entity_count;
+  const relCount = counts!.relationship_count;
+
   return {
-    entity_count: counts!.entity_count,
-    relationship_count: counts!.relationship_count,
+    entity_count: entityCount,
+    relationship_count: relCount,
     observation_count: counts!.observation_count,
     types: typesMap,
+    relationship_types: relTypesMap,
     avg_confidence: counts!.avg_confidence ?? 0,
+    avg_relationships_per_entity:
+      entityCount > 0 ? (relCount * 2) / entityCount : 0,
+    avg_observations_per_entity: avgObsRow?.avg_obs ?? 0,
+    entities_without_observations: counts!.entities_without_observations,
+    orphan_observations: counts!.orphan_observations,
     tier_distribution: tierMap,
     temporal_health: {
       durable: counts!.durable,
