@@ -754,3 +754,296 @@ export async function findPaths(
 
   return [];
 }
+
+// --- Graph Analysis ---
+
+export async function extractSubgraph(
+  backend: Backend,
+  seedNames: string[],
+  options?: { maxDepth?: number; maxEntities?: number },
+): Promise<{ entities: EntityRow[]; relationships: RelationshipRow[] }> {
+  const maxDepth = options?.maxDepth ?? 2;
+  const maxEntities = options?.maxEntities ?? 100;
+
+  // Resolve seed IDs
+  const seedIds: string[] = [];
+  for (const name of seedNames) {
+    const row = await backend.get<{ id: string }>(
+      "SELECT id FROM entities WHERE name = ?",
+      [name],
+    );
+    if (row) seedIds.push(row.id);
+  }
+  if (seedIds.length === 0) return { entities: [], relationships: [] };
+
+  // BFS to collect entity IDs
+  const visited = new Set<string>(seedIds);
+  let frontier = [...seedIds];
+
+  for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
+    const nextFrontier: string[] = [];
+    for (const entityId of frontier) {
+      const neighbors = await backend.all<{ id: string }>(
+        `SELECT DISTINCT e.id FROM relationships r
+         JOIN entities e ON (e.id = r.to_entity OR e.id = r.from_entity)
+         WHERE (r.from_entity = ? OR r.to_entity = ?) AND e.id != ?`,
+        [entityId, entityId, entityId],
+      );
+      for (const n of neighbors) {
+        if (!visited.has(n.id) && visited.size < maxEntities) {
+          visited.add(n.id);
+          nextFrontier.push(n.id);
+        }
+      }
+    }
+    frontier = nextFrontier;
+  }
+
+  // Fetch full entity rows
+  const entityIds = [...visited];
+  const placeholders = entityIds.map(() => "?").join(", ");
+  const entities = await backend.all<EntityRow>(
+    `SELECT * FROM entities WHERE id IN (${placeholders})`,
+    entityIds,
+  );
+
+  // Fetch relationships between collected entities
+  const relationships = await backend.all<RelationshipRow>(
+    `SELECT * FROM relationships
+     WHERE from_entity IN (${placeholders}) AND to_entity IN (${placeholders})`,
+    [...entityIds, ...entityIds],
+  );
+
+  return { entities, relationships };
+}
+
+export async function getCentrality(
+  backend: Backend,
+  options?: { mode?: "degree" | "pagerank"; limit?: number },
+): Promise<Array<{ name: string; type: string; score: number }>> {
+  const mode = options?.mode ?? "degree";
+  const limit = options?.limit ?? 20;
+
+  if (mode === "degree") {
+    return backend.all<{ name: string; type: string; score: number }>(
+      `SELECT e.name, e.type, COUNT(*) as score
+       FROM entities e
+       JOIN relationships r ON (e.id = r.from_entity OR e.id = r.to_entity)
+       GROUP BY e.id, e.name, e.type
+       ORDER BY score DESC
+       LIMIT ?`,
+      [limit],
+    );
+  }
+
+  // PageRank: iterative computation
+  const entities = await backend.all<{
+    id: string;
+    name: string;
+    type: string;
+  }>("SELECT id, name, type FROM entities");
+  const relationships = await backend.all<{
+    from_entity: string;
+    to_entity: string;
+  }>("SELECT from_entity, to_entity FROM relationships");
+
+  const n = entities.length;
+  if (n === 0) return [];
+
+  const damping = 0.85;
+  const iterations = 20;
+  const idToIdx = new Map<string, number>();
+  for (let i = 0; i < entities.length; i++) {
+    idToIdx.set(entities[i]!.id, i);
+  }
+
+  // Build adjacency: outgoing neighbors
+  const outLinks: number[][] = Array.from({ length: n }, () => []);
+  for (const r of relationships) {
+    const from = idToIdx.get(r.from_entity);
+    const to = idToIdx.get(r.to_entity);
+    if (from !== undefined && to !== undefined) {
+      outLinks[from]!.push(to);
+    }
+  }
+
+  let scores = new Float64Array(n).fill(1.0 / n);
+
+  for (let iter = 0; iter < iterations; iter++) {
+    const newScores = new Float64Array(n).fill((1 - damping) / n);
+    for (let i = 0; i < n; i++) {
+      const links = outLinks[i]!;
+      if (links.length > 0) {
+        const share = (damping * scores[i]!) / links.length;
+        for (const j of links) {
+          newScores[j] = newScores[j]! + share;
+        }
+      } else {
+        // Dangling node: distribute evenly
+        const share = (damping * scores[i]!) / n;
+        for (let j = 0; j < n; j++) {
+          newScores[j] = newScores[j]! + share;
+        }
+      }
+    }
+    scores = newScores;
+  }
+
+  const ranked = entities
+    .map((e, i) => ({ name: e.name, type: e.type, score: scores[i]! }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+
+  return ranked;
+}
+
+export async function getTimeline(
+  backend: Backend,
+  options?: {
+    entityName?: string;
+    entityType?: string;
+    limit?: number;
+    offset?: number;
+  },
+): Promise<
+  Array<{
+    id: string;
+    content: string;
+    created_at: string;
+    entity_names: string[];
+  }>
+> {
+  const limit = options?.limit ?? 50;
+  const offset = options?.offset ?? 0;
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (options?.entityName) {
+    conditions.push("e.name = ?");
+    params.push(options.entityName);
+  }
+  if (options?.entityType) {
+    conditions.push("e.type = ?");
+    params.push(options.entityType);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const rows = await backend.all<{
+    id: string;
+    content: string;
+    created_at: string;
+    entity_names: string;
+  }>(
+    `SELECT o.id, o.content, o.created_at, GROUP_CONCAT(DISTINCT e.name) as entity_names
+     FROM observations o
+     JOIN observation_entities oe ON oe.observation_id = o.id
+     JOIN entities e ON e.id = oe.entity_id
+     ${where}
+     GROUP BY o.id
+     ORDER BY o.created_at DESC
+     LIMIT ? OFFSET ?`,
+    [...params, limit, offset],
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    content: r.content,
+    created_at: r.created_at,
+    entity_names: r.entity_names ? r.entity_names.split(",") : [],
+  }));
+}
+
+export async function getStats(backend: Backend): Promise<{
+  entity_count: number;
+  relationship_count: number;
+  observation_count: number;
+  types: Record<string, number>;
+  avg_confidence: number;
+  tier_distribution: Record<string, number>;
+  temporal_health: { durable: number; stable: number; fragile: number };
+}> {
+  const [entityCount] = await backend.all<{ count: number }>(
+    "SELECT COUNT(*) as count FROM entities",
+  );
+  const [relCount] = await backend.all<{ count: number }>(
+    "SELECT COUNT(*) as count FROM relationships",
+  );
+  const [obsCount] = await backend.all<{ count: number }>(
+    "SELECT COUNT(*) as count FROM observations",
+  );
+
+  const types = await backend.all<{ type: string; count: number }>(
+    "SELECT type, COUNT(*) as count FROM entities GROUP BY type",
+  );
+  const typesMap: Record<string, number> = {};
+  for (const t of types) typesMap[t.type] = t.count;
+
+  const [avgConf] = await backend.all<{ avg: number }>(
+    "SELECT AVG(confidence) as avg FROM entities",
+  );
+
+  const tiers = await backend.all<{ staleness_tier: string; count: number }>(
+    "SELECT staleness_tier, COUNT(*) as count FROM entities GROUP BY staleness_tier",
+  );
+  const tierMap: Record<string, number> = {};
+  for (const t of tiers) tierMap[t.staleness_tier] = t.count;
+
+  const [durable] = await backend.all<{ count: number }>(
+    "SELECT COUNT(*) as count FROM entities WHERE stability > 5",
+  );
+  const [stable] = await backend.all<{ count: number }>(
+    "SELECT COUNT(*) as count FROM entities WHERE stability > 1 AND stability <= 5",
+  );
+  const [fragile] = await backend.all<{ count: number }>(
+    "SELECT COUNT(*) as count FROM entities WHERE stability <= 1",
+  );
+
+  return {
+    entity_count: entityCount!.count,
+    relationship_count: relCount!.count,
+    observation_count: obsCount!.count,
+    types: typesMap,
+    avg_confidence: avgConf!.avg ?? 0,
+    tier_distribution: tierMap,
+    temporal_health: {
+      durable: durable!.count,
+      stable: stable!.count,
+      fragile: fragile!.count,
+    },
+  };
+}
+
+export async function validateGraph(backend: Backend): Promise<{
+  islands: string[];
+  orphanObservations: string[];
+  missingObservations: string[];
+}> {
+  // Islands: entities with no relationships
+  const islands = await backend.all<{ name: string }>(
+    `SELECT e.name FROM entities e
+     WHERE e.id NOT IN (
+       SELECT from_entity FROM relationships
+       UNION
+       SELECT to_entity FROM relationships
+     )`,
+  );
+
+  // Orphan observations: no entity links
+  const orphans = await backend.all<{ id: string }>(
+    `SELECT o.id FROM observations o
+     WHERE o.id NOT IN (SELECT observation_id FROM observation_entities)`,
+  );
+
+  // Entities with zero observations
+  const missing = await backend.all<{ name: string }>(
+    `SELECT e.name FROM entities e
+     WHERE e.id NOT IN (SELECT entity_id FROM observation_entities)`,
+  );
+
+  return {
+    islands: islands.map((e) => e.name),
+    orphanObservations: orphans.map((o) => o.id),
+    missingObservations: missing.map((e) => e.name),
+  };
+}
