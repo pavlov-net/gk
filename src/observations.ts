@@ -1,5 +1,6 @@
 import type { Backend } from "./backend";
 import type { Config } from "./config";
+import type { Embedder } from "./embeddings";
 import { newId } from "./id";
 import type { ObservationInput, ObservationRow } from "./types";
 
@@ -11,6 +12,7 @@ export interface ObservationResult {
 export async function addObservations(
   backend: Backend,
   observations: ObservationInput[],
+  embedder?: Embedder,
 ): Promise<ObservationResult[]> {
   const results: ObservationResult[] = [];
   const ts = new Date().toISOString();
@@ -45,6 +47,19 @@ export async function addObservations(
       results.push({ id, entity_names: input.entity_names });
     }
   });
+
+  // Embed after transaction succeeds (non-fatal on failure)
+  if (embedder && results.length > 0) {
+    try {
+      const texts = observations.map((o) => o.content);
+      const vectors = await embedder.embed(texts);
+      await backend.storeEmbeddings(
+        results.map((r, i) => ({ id: r.id, vector: vectors[i] })),
+      );
+    } catch {
+      // Graceful degradation: observation saved, embedding skipped
+    }
+  }
 
   return results;
 }
@@ -101,6 +116,7 @@ export async function addChunkedObservation(
     source?: string;
     maxChunkSize?: number;
   },
+  embedder?: Embedder,
 ): Promise<ObservationResult[]> {
   const maxSize = options?.maxChunkSize ?? 2000;
   const chunks = splitIntoChunks(content, maxSize);
@@ -119,7 +135,7 @@ export async function addChunkedObservation(
     source: options?.source,
   }));
 
-  return addObservations(backend, observations);
+  return addObservations(backend, observations, embedder);
 }
 
 function splitIntoChunks(text: string, maxSize: number): string[] {
