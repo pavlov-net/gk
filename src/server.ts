@@ -3,6 +3,7 @@ import { z } from "zod";
 import pkg from "../package.json";
 import type { Backend } from "./backend";
 import type { Config } from "./config";
+import type { Embedder } from "./embeddings";
 import {
   addEntities,
   addRelationships,
@@ -33,14 +34,18 @@ import {
   addObservations,
   readObservation,
 } from "./observations";
-import { searchHybrid, searchKeyword } from "./search";
+import { searchHybrid, searchKeyword, searchSemantic } from "./search";
 import { EntityInput, ObservationInput, RelationshipInput } from "./types";
 
 function text(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
 }
 
-export function createServer(backend: Backend, config: Config): McpServer {
+export function createServer(
+  backend: Backend,
+  config: Config,
+  embedder?: Embedder,
+): McpServer {
   const server = new McpServer(
     { name: "gk", version: pkg.version },
     {
@@ -123,7 +128,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       inputSchema: { observations: z.array(ObservationInput) },
     },
     async ({ observations }) => {
-      return text(await addObservations(backend, observations));
+      return text(await addObservations(backend, observations, embedder));
     },
   );
 
@@ -146,12 +151,18 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     },
     async (args) => {
       return text(
-        await addChunkedObservation(backend, args.content, args.entity_names, {
-          metadata: args.metadata,
-          confidence: args.confidence,
-          source: args.source,
-          maxChunkSize: args.max_chunk_size,
-        }),
+        await addChunkedObservation(
+          backend,
+          args.content,
+          args.entity_names,
+          {
+            metadata: args.metadata,
+            confidence: args.confidence,
+            source: args.source,
+            maxChunkSize: args.max_chunk_size,
+          },
+          embedder,
+        ),
       );
     },
   );
@@ -315,9 +326,54 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     },
     async (args) => {
       return text(
-        await searchHybrid(backend, args.query, config, {
+        await searchHybrid(
+          backend,
+          args.query,
+          config,
+          {
+            entityTypes: args.entity_types,
+            metadataFilters: args.metadata_filters,
+            limit: args.limit,
+          },
+          embedder,
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
+    "search_semantic",
+    {
+      description:
+        "Semantic vector search over observations. Finds conceptually similar content even without exact keyword matches. Requires Ollama running with an embedding model.",
+      inputSchema: {
+        query: z.string().describe("Natural language search query"),
+        entity_types: z
+          .array(z.string())
+          .optional()
+          .describe("Filter by entity types"),
+        limit: z.coerce
+          .number()
+          .optional()
+          .describe("Max results (default 20)"),
+      },
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async (args) => {
+      if (!embedder) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Semantic search unavailable: no embedding provider configured",
+            },
+          ],
+          isError: true,
+        };
+      }
+      return text(
+        await searchSemantic(backend, args.query, embedder, {
           entityTypes: args.entity_types,
-          metadataFilters: args.metadata_filters,
           limit: args.limit,
         }),
       );
