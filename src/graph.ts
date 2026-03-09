@@ -483,3 +483,142 @@ export async function mergeEntities(
 
   return { merged: true, observationsMoved, relationshipsMoved };
 }
+
+// --- Entity Profiles + Queries ---
+
+export interface EntityProfile {
+  id: string;
+  name: string;
+  type: string;
+  properties: Record<string, unknown>;
+  confidence: number;
+  staleness_tier: string;
+  stability: number;
+  access_count: number;
+  last_accessed: string | null;
+  created_at: string;
+  updated_at: string;
+  relationships: Array<{
+    type: string;
+    target: string;
+    direction: "outgoing" | "incoming";
+    strength: number;
+  }>;
+  observations: Array<{
+    id: string;
+    content: string;
+    created_at: string;
+  }>;
+}
+
+export async function getEntityProfile(
+  backend: Backend,
+  name: string,
+  config: Config,
+  options?: { maxObservationLength?: number },
+): Promise<EntityProfile | undefined> {
+  const entity = await backend.get<EntityRow>(
+    "SELECT * FROM entities WHERE name = ?",
+    [name],
+  );
+  if (!entity) return undefined;
+
+  // Bump temporal fields
+  const newStability = Math.min(
+    entity.stability * config.stability_growth,
+    config.max_stability,
+  );
+  await backend.run(
+    `UPDATE entities SET
+      access_count = access_count + 1,
+      stability = ?,
+      last_accessed = ?
+    WHERE id = ?`,
+    [newStability, new Date().toISOString(), entity.id],
+  );
+
+  // Get relationships with strength
+  const outgoing = await backend.all<{
+    type: string;
+    name: string;
+    strength: number;
+  }>(
+    `SELECT r.type, e.name, r.strength FROM relationships r
+     JOIN entities e ON e.id = r.to_entity
+     WHERE r.from_entity = ?`,
+    [entity.id],
+  );
+
+  const incoming = await backend.all<{
+    type: string;
+    name: string;
+    strength: number;
+  }>(
+    `SELECT r.type, e.name, r.strength FROM relationships r
+     JOIN entities e ON e.id = r.from_entity
+     WHERE r.to_entity = ?`,
+    [entity.id],
+  );
+
+  const relationships = [
+    ...outgoing.map((r) => ({
+      type: r.type,
+      target: r.name,
+      direction: "outgoing" as const,
+      strength: r.strength,
+    })),
+    ...incoming.map((r) => ({
+      type: r.type,
+      target: r.name,
+      direction: "incoming" as const,
+      strength: r.strength,
+    })),
+  ];
+
+  // Get observations (truncated)
+  const maxLen = options?.maxObservationLength ?? 200;
+  const obs = await backend.all<{
+    id: string;
+    content: string;
+    created_at: string;
+  }>(
+    `SELECT o.id, o.content, o.created_at FROM observations o
+     JOIN observation_entities oe ON oe.observation_id = o.id
+     WHERE oe.entity_id = ?
+     ORDER BY o.created_at DESC`,
+    [entity.id],
+  );
+
+  return {
+    id: entity.id,
+    name: entity.name,
+    type: entity.type,
+    properties: JSON.parse(
+      typeof entity.properties === "string" ? entity.properties : "{}",
+    ),
+    confidence: entity.confidence,
+    staleness_tier: entity.staleness_tier,
+    stability: newStability,
+    access_count: entity.access_count + 1,
+    last_accessed: new Date().toISOString(),
+    created_at: entity.created_at,
+    updated_at: entity.updated_at,
+    relationships,
+    observations: obs.map((o) => ({
+      id: o.id,
+      content:
+        o.content.length > maxLen
+          ? `${o.content.slice(0, maxLen)}...`
+          : o.content,
+      created_at: o.created_at,
+    })),
+  };
+}
+
+export async function listEntityTypes(
+  backend: Backend,
+): Promise<Array<{ type: string; count: number }>> {
+  return backend.all<{ type: string; count: number }>(
+    "SELECT type, COUNT(*) as count FROM entities GROUP BY type ORDER BY count DESC",
+  );
+}

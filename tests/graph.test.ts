@@ -5,7 +5,9 @@ import {
   addRelationships,
   deleteEntities,
   getEntity,
+  getEntityProfile,
   getRelationships,
+  listEntityTypes,
   mergeEntities,
   updateEntities,
   updateRelationships,
@@ -382,5 +384,81 @@ describe("Entity Merging", () => {
       "Auth",
     ]);
     expect(entity).toBeDefined();
+  });
+});
+
+describe("Entity Profiles", () => {
+  let db: SqliteBackend;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("getEntityProfile returns full profile with relationships and observations", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Auth", type: "component" },
+      { name: "DB", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "Auth", to_entity: "DB", type: "depends_on" },
+    ]);
+    await addObservations(db, [
+      { content: "Auth handles JWT tokens", entity_names: ["Auth"] },
+    ]);
+
+    const profile = await getEntityProfile(db, "Auth", config);
+    expect(profile).toBeDefined();
+    expect(profile!.name).toBe("Auth");
+    expect(profile!.relationships).toHaveLength(1);
+    expect(profile!.relationships[0]!.target).toBe("DB");
+    expect(profile!.relationships[0]!.direction).toBe("outgoing");
+    expect(profile!.observations).toHaveLength(1);
+    expect(profile!.observations[0]!.content).toBe("Auth handles JWT tokens");
+  });
+
+  test("getEntityProfile truncates long observations", async () => {
+    db = await createTestDb();
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    const longContent = "A".repeat(500);
+    await addObservations(db, [
+      { content: longContent, entity_names: ["Auth"] },
+    ]);
+
+    const profile = await getEntityProfile(db, "Auth", config, {
+      maxObservationLength: 100,
+    });
+    expect(profile!.observations[0]!.content).toHaveLength(103); // 100 + "..."
+    expect(profile!.observations[0]!.content.endsWith("...")).toBe(true);
+  });
+
+  test("getEntityProfile returns undefined for missing entity", async () => {
+    db = await createTestDb();
+    const profile = await getEntityProfile(db, "Nope", config);
+    expect(profile).toBeUndefined();
+  });
+});
+
+describe("listEntityTypes", () => {
+  let db: SqliteBackend;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("returns type counts", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Auth", type: "component" },
+      { name: "DB", type: "component" },
+      { name: "UseJWT", type: "decision" },
+    ]);
+
+    const types = await listEntityTypes(db);
+    expect(types).toHaveLength(2);
+    expect(types[0]!.type).toBe("component");
+    expect(types[0]!.count).toBe(2);
+    expect(types[1]!.type).toBe("decision");
+    expect(types[1]!.count).toBe(1);
   });
 });
