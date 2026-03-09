@@ -34,7 +34,7 @@ import {
   addObservations,
   readObservation,
 } from "./observations";
-import { searchHybrid, searchKeyword, searchSemantic } from "./search";
+import { searchHybrid, searchKeyword } from "./search";
 import { EntityInput, ObservationInput, RelationshipInput } from "./types";
 
 function text(data: unknown) {
@@ -301,10 +301,10 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
   );
 
   server.registerTool(
-    "search_hybrid",
+    "search",
     {
       description:
-        "Hybrid search combining FTS relevance with temporal scoring (retention, Hebbian strengthening, staleness tier). Default search tool.",
+        "Search observations using keyword matching, semantic similarity (when Ollama is available), and temporal scoring. The default and recommended search tool.",
       inputSchema: {
         query: z.string().describe("Search query"),
         entity_types: z
@@ -337,45 +337,6 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
           },
           embedder,
         ),
-      );
-    },
-  );
-
-  server.registerTool(
-    "search_semantic",
-    {
-      description:
-        "Semantic vector search over observations. Finds conceptually similar content even without exact keyword matches. Requires Ollama running with an embedding model.",
-      inputSchema: {
-        query: z.string().describe("Natural language search query"),
-        entity_types: z
-          .array(z.string())
-          .optional()
-          .describe("Filter by entity types"),
-        limit: z.coerce
-          .number()
-          .optional()
-          .describe("Max results (default 20)"),
-      },
-      annotations: { readOnlyHint: true, idempotentHint: true },
-    },
-    async (args) => {
-      if (!embedder) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "Semantic search unavailable: no embedding provider configured",
-            },
-          ],
-          isError: true,
-        };
-      }
-      return text(
-        await searchSemantic(backend, args.query, embedder, {
-          entityTypes: args.entity_types,
-          limit: args.limit,
-        }),
       );
     },
   );

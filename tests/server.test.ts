@@ -35,7 +35,7 @@ describe("MCP Server", () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
     expect(names).toContain("add_entities");
-    expect(names).toContain("search_hybrid");
+    expect(names).toContain("search");
     expect(names).toContain("get_entity");
     expect(names).toContain("validate_graph");
     expect(names).toContain("prune_stale");
