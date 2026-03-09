@@ -54,7 +54,7 @@ export async function addObservations(
       const texts = observations.map((o) => o.content);
       const vectors = await embedder.embed(texts);
       await backend.storeEmbeddings(
-        results.map((r, i) => ({ id: r.id, vector: vectors[i] })),
+        results.map((r, i) => ({ id: r.id, vector: vectors[i]! })),
       );
     } catch {
       // Graceful degradation: observation saved, embedding skipped
