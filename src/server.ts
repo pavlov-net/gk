@@ -201,12 +201,24 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     "delete_entities",
     {
       description:
-        "Delete entities by name. Also removes their relationships and observation links.",
-      inputSchema: { names: z.array(z.string()) },
+        "Delete entities by name. Also removes their relationships and observation links. Optionally delete orphaned observations.",
+      inputSchema: {
+        names: z.array(z.string()),
+        delete_orphan_observations: z
+          .boolean()
+          .optional()
+          .describe(
+            "Also delete observations no longer linked to any entity (default false)",
+          ),
+      },
       annotations: { destructiveHint: true },
     },
-    async ({ names }) => {
-      return text({ deleted: await deleteEntities(backend, names) });
+    async ({ names, delete_orphan_observations }) => {
+      return text(
+        await deleteEntities(backend, names, {
+          deleteOrphanObservations: delete_orphan_observations,
+        }),
+      );
     },
   );
 
@@ -214,17 +226,27 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     "merge_entities",
     {
       description:
-        "Merge source entity into target. Transfers observations and relationships, then deletes source.",
+        "Merge one or more source entities into target. Transfers observations and relationships, merges properties (target wins), then deletes sources.",
       inputSchema: {
-        source_name: z
-          .string()
-          .describe("Entity to merge from (will be deleted)"),
+        source_names: z
+          .array(z.string())
+          .describe("Entities to merge from (will be deleted)"),
         target_name: z.string().describe("Entity to merge into (will be kept)"),
+        merge_properties: z
+          .boolean()
+          .optional()
+          .describe(
+            "Merge source properties into target, target wins on conflict (default true)",
+          ),
       },
       annotations: { destructiveHint: true },
     },
-    async ({ source_name, target_name }) => {
-      return text(await mergeEntities(backend, source_name, target_name));
+    async ({ source_names, target_name, merge_properties }) => {
+      return text(
+        await mergeEntities(backend, source_names, target_name, {
+          mergeProperties: merge_properties,
+        }),
+      );
     },
   );
 
@@ -466,6 +488,10 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
           .number()
           .optional()
           .describe("Max total neighbors (default 50)"),
+        relationship_types: z
+          .array(z.string())
+          .optional()
+          .describe("Only traverse these relationship types"),
       },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -473,6 +499,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       const neighbors = await getNeighbors(backend, args.name, config, {
         maxDepth: args.max_depth,
         maxResults: args.max_results,
+        relationshipTypes: args.relationship_types,
       });
       // Convert Map to serializable object
       const result: Record<string, Array<{ name: string; type: string }>> = {};
@@ -523,6 +550,10 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
           .enum(["degree", "pagerank"])
           .optional()
           .describe("Centrality metric (default degree)"),
+        entity_names: z
+          .array(z.string())
+          .optional()
+          .describe("Only compute centrality for these entities"),
         limit: z.number().optional().describe("Top N results (default 20)"),
       },
       annotations: { readOnlyHint: true, idempotentHint: true },
@@ -531,6 +562,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       return text(
         await getCentrality(backend, {
           mode: args.mode,
+          entityNames: args.entity_names,
           limit: args.limit,
         }),
       );
@@ -541,10 +573,16 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     "get_timeline",
     {
       description:
-        "Chronological observation history with entity names. Filterable by entity name or type.",
+        "Chronological observation history with entity names. Filterable by entity names and/or types.",
       inputSchema: {
-        entity_name: z.string().optional().describe("Filter by entity name"),
-        entity_type: z.string().optional().describe("Filter by entity type"),
+        entity_names: z
+          .array(z.string())
+          .optional()
+          .describe("Filter by entity names"),
+        entity_types: z
+          .array(z.string())
+          .optional()
+          .describe("Filter by entity types"),
         limit: z.number().optional().describe("Max results (default 50)"),
         offset: z.number().optional().describe("Pagination offset (default 0)"),
       },
@@ -553,8 +591,8 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     async (args) => {
       return text(
         await getTimeline(backend, {
-          entityName: args.entity_name,
-          entityType: args.entity_type,
+          entityNames: args.entity_names,
+          entityTypes: args.entity_types,
           limit: args.limit,
           offset: args.offset,
         }),

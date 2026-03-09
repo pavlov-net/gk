@@ -98,6 +98,26 @@ describe("getNeighbors", () => {
     expect(row!.access_count).toBe(1);
   });
 
+  test("filters by relationship types", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Auth", type: "component" },
+      { name: "DB", type: "component" },
+      { name: "Logger", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "Auth", to_entity: "DB", type: "depends_on" },
+      { from_entity: "Auth", to_entity: "Logger", type: "logs_to" },
+    ]);
+
+    const neighbors = await getNeighbors(db, "Auth", config, {
+      maxDepth: 1,
+      relationshipTypes: ["depends_on"],
+    });
+    expect(neighbors.get(1)!).toHaveLength(1);
+    expect(neighbors.get(1)![0]!.name).toBe("DB");
+  });
+
   test("returns empty for missing entity", async () => {
     db = await createTestDb();
     const neighbors = await getNeighbors(db, "Nope", config);
@@ -288,6 +308,44 @@ describe("getTimeline", () => {
     const timeline = await getTimeline(db, { entityName: "Auth" });
     expect(timeline).toHaveLength(1);
     expect(timeline[0]!.content).toBe("Auth observation");
+  });
+
+  test("filters by plural entity names", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Auth", type: "component" },
+      { name: "DB", type: "component" },
+      { name: "Logger", type: "component" },
+    ]);
+    await addObservations(db, [
+      { content: "Auth observation", entity_names: ["Auth"] },
+      { content: "DB observation", entity_names: ["DB"] },
+      { content: "Logger observation", entity_names: ["Logger"] },
+    ]);
+
+    const timeline = await getTimeline(db, {
+      entityNames: ["Auth", "DB"],
+    });
+    expect(timeline).toHaveLength(2);
+  });
+
+  test("filters by plural entity types", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Auth", type: "component" },
+      { name: "UseJWT", type: "decision" },
+      { name: "Bug123", type: "issue" },
+    ]);
+    await addObservations(db, [
+      { content: "Auth obs", entity_names: ["Auth"] },
+      { content: "JWT decision", entity_names: ["UseJWT"] },
+      { content: "Bug report", entity_names: ["Bug123"] },
+    ]);
+
+    const timeline = await getTimeline(db, {
+      entityTypes: ["component", "decision"],
+    });
+    expect(timeline).toHaveLength(2);
   });
 });
 

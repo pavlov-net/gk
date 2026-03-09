@@ -190,19 +190,42 @@ export async function updateEntities(
 export async function deleteEntities(
   backend: Backend,
   names: string[],
-): Promise<number> {
+  options?: { deleteOrphanObservations?: boolean },
+): Promise<{ deleted: number; orphanObservationsDeleted: number }> {
   let deleted = 0;
+  let orphanObservationsDeleted = 0;
 
   await backend.transaction(async () => {
     for (const name of names) {
-      const result = await backend.run("DELETE FROM entities WHERE name = ?", [
-        name,
-      ]);
-      deleted += result.changes;
+      const exists = await backend.get(
+        "SELECT 1 FROM entities WHERE name = ?",
+        [name],
+      );
+      if (exists) {
+        await backend.run("DELETE FROM entities WHERE name = ?", [name]);
+        deleted++;
+      }
+    }
+
+    if (options?.deleteOrphanObservations) {
+      const orphans = await backend.all<{ id: string }>(
+        `SELECT o.id FROM observations o
+         WHERE NOT EXISTS (
+           SELECT 1 FROM observation_entities oe WHERE oe.observation_id = o.id
+         )`,
+      );
+      if (orphans.length > 0) {
+        const placeholders = orphans.map(() => "?").join(", ");
+        await backend.run(
+          `DELETE FROM observations WHERE id IN (${placeholders})`,
+          orphans.map((o) => o.id),
+        );
+        orphanObservationsDeleted = orphans.length;
+      }
     }
   });
 
-  return deleted;
+  return { deleted, orphanObservationsDeleted };
 }
 
 // --- Relationship CRUD ---
@@ -368,120 +391,139 @@ export async function updateRelationships(
 
 export async function mergeEntities(
   backend: Backend,
-  sourceName: string,
+  sourceNames: string[],
   targetName: string,
+  options?: { mergeProperties?: boolean },
 ): Promise<{
   merged: boolean;
+  sourcesMerged: number;
   observationsMoved: number;
   relationshipsMoved: number;
 }> {
-  const source = await backend.get<{ id: string }>(
-    "SELECT id FROM entities WHERE name = ?",
-    [sourceName],
-  );
-  const target = await backend.get<{ id: string }>(
-    "SELECT id FROM entities WHERE name = ?",
+  const mergeProperties = options?.mergeProperties ?? true;
+  const target = await backend.get<{ id: string; properties: string }>(
+    "SELECT id, properties FROM entities WHERE name = ?",
     [targetName],
   );
-
-  if (!source) throw new Error(`Source entity not found: ${sourceName}`);
   if (!target) throw new Error(`Target entity not found: ${targetName}`);
 
+  let sourcesMerged = 0;
   let observationsMoved = 0;
   let relationshipsMoved = 0;
 
   await backend.transaction(async () => {
-    // Move observations: update junction table, ignore duplicates
-    const obsLinks = await backend.all<{ observation_id: string }>(
-      "SELECT observation_id FROM observation_entities WHERE entity_id = ?",
-      [source.id],
-    );
-    for (const link of obsLinks) {
-      const existing = await backend.get(
-        "SELECT 1 FROM observation_entities WHERE observation_id = ? AND entity_id = ?",
-        [link.observation_id, target.id],
+    for (const sourceName of sourceNames) {
+      const source = await backend.get<{ id: string; properties: string }>(
+        "SELECT id, properties FROM entities WHERE name = ?",
+        [sourceName],
       );
-      if (existing) {
-        await backend.run(
-          "DELETE FROM observation_entities WHERE observation_id = ? AND entity_id = ?",
-          [link.observation_id, source.id],
-        );
-      } else {
-        await backend.run(
-          "UPDATE observation_entities SET entity_id = ? WHERE observation_id = ? AND entity_id = ?",
-          [target.id, link.observation_id, source.id],
-        );
-        observationsMoved++;
-      }
-    }
+      if (!source) continue;
 
-    // Move outgoing relationships
-    const outRels = await backend.all<{
-      id: string;
-      to_entity: string;
-      type: string;
-      strength: number;
-    }>(
-      "SELECT id, to_entity, type, strength FROM relationships WHERE from_entity = ?",
-      [source.id],
-    );
-    for (const rel of outRels) {
-      const dup = await backend.get<{ id: string; strength: number }>(
-        "SELECT id, strength FROM relationships WHERE from_entity = ? AND to_entity = ? AND type = ?",
-        [target.id, rel.to_entity, rel.type],
+      // Merge properties (target wins on conflict)
+      if (mergeProperties) {
+        const sourceProps = JSON.parse(source.properties || "{}");
+        const targetProps = JSON.parse(target.properties || "{}");
+        const merged = { ...sourceProps, ...targetProps };
+        await backend.run("UPDATE entities SET properties = ? WHERE id = ?", [
+          JSON.stringify(merged),
+          target.id,
+        ]);
+        target.properties = JSON.stringify(merged);
+      }
+
+      // Move observations: update junction table, ignore duplicates
+      const obsLinks = await backend.all<{ observation_id: string }>(
+        "SELECT observation_id FROM observation_entities WHERE entity_id = ?",
+        [source.id],
       );
-      if (dup) {
-        const maxStrength = Math.max(dup.strength, rel.strength);
-        await backend.run(
-          "UPDATE relationships SET strength = ? WHERE id = ?",
-          [maxStrength, dup.id],
+      for (const link of obsLinks) {
+        const existing = await backend.get(
+          "SELECT 1 FROM observation_entities WHERE observation_id = ? AND entity_id = ?",
+          [link.observation_id, target.id],
         );
-        await backend.run("DELETE FROM relationships WHERE id = ?", [rel.id]);
-      } else {
-        await backend.run(
-          "UPDATE relationships SET from_entity = ? WHERE id = ?",
-          [target.id, rel.id],
-        );
-        relationshipsMoved++;
+        if (existing) {
+          await backend.run(
+            "DELETE FROM observation_entities WHERE observation_id = ? AND entity_id = ?",
+            [link.observation_id, source.id],
+          );
+        } else {
+          await backend.run(
+            "UPDATE observation_entities SET entity_id = ? WHERE observation_id = ? AND entity_id = ?",
+            [target.id, link.observation_id, source.id],
+          );
+          observationsMoved++;
+        }
       }
-    }
 
-    // Move incoming relationships
-    const inRels = await backend.all<{
-      id: string;
-      from_entity: string;
-      type: string;
-      strength: number;
-    }>(
-      "SELECT id, from_entity, type, strength FROM relationships WHERE to_entity = ?",
-      [source.id],
-    );
-    for (const rel of inRels) {
-      const dup = await backend.get<{ id: string; strength: number }>(
-        "SELECT id, strength FROM relationships WHERE from_entity = ? AND to_entity = ? AND type = ?",
-        [rel.from_entity, target.id, rel.type],
+      // Move outgoing relationships
+      const outRels = await backend.all<{
+        id: string;
+        to_entity: string;
+        type: string;
+        strength: number;
+      }>(
+        "SELECT id, to_entity, type, strength FROM relationships WHERE from_entity = ?",
+        [source.id],
       );
-      if (dup) {
-        const maxStrength = Math.max(dup.strength, rel.strength);
-        await backend.run(
-          "UPDATE relationships SET strength = ? WHERE id = ?",
-          [maxStrength, dup.id],
+      for (const rel of outRels) {
+        const dup = await backend.get<{ id: string; strength: number }>(
+          "SELECT id, strength FROM relationships WHERE from_entity = ? AND to_entity = ? AND type = ?",
+          [target.id, rel.to_entity, rel.type],
         );
-        await backend.run("DELETE FROM relationships WHERE id = ?", [rel.id]);
-      } else {
-        await backend.run(
-          "UPDATE relationships SET to_entity = ? WHERE id = ?",
-          [target.id, rel.id],
-        );
-        relationshipsMoved++;
+        if (dup) {
+          const maxStrength = Math.max(dup.strength, rel.strength);
+          await backend.run(
+            "UPDATE relationships SET strength = ? WHERE id = ?",
+            [maxStrength, dup.id],
+          );
+          await backend.run("DELETE FROM relationships WHERE id = ?", [rel.id]);
+        } else {
+          await backend.run(
+            "UPDATE relationships SET from_entity = ? WHERE id = ?",
+            [target.id, rel.id],
+          );
+          relationshipsMoved++;
+        }
       }
-    }
 
-    // Delete source entity
-    await backend.run("DELETE FROM entities WHERE id = ?", [source.id]);
+      // Move incoming relationships
+      const inRels = await backend.all<{
+        id: string;
+        from_entity: string;
+        type: string;
+        strength: number;
+      }>(
+        "SELECT id, from_entity, type, strength FROM relationships WHERE to_entity = ?",
+        [source.id],
+      );
+      for (const rel of inRels) {
+        const dup = await backend.get<{ id: string; strength: number }>(
+          "SELECT id, strength FROM relationships WHERE from_entity = ? AND to_entity = ? AND type = ?",
+          [rel.from_entity, target.id, rel.type],
+        );
+        if (dup) {
+          const maxStrength = Math.max(dup.strength, rel.strength);
+          await backend.run(
+            "UPDATE relationships SET strength = ? WHERE id = ?",
+            [maxStrength, dup.id],
+          );
+          await backend.run("DELETE FROM relationships WHERE id = ?", [rel.id]);
+        } else {
+          await backend.run(
+            "UPDATE relationships SET to_entity = ? WHERE id = ?",
+            [target.id, rel.id],
+          );
+          relationshipsMoved++;
+        }
+      }
+
+      // Delete source entity
+      await backend.run("DELETE FROM entities WHERE id = ?", [source.id]);
+      sourcesMerged++;
+    }
   });
 
-  return { merged: true, observationsMoved, relationshipsMoved };
+  return { merged: true, sourcesMerged, observationsMoved, relationshipsMoved };
 }
 
 // --- Entity Profiles + Queries ---
@@ -629,7 +671,11 @@ export async function getNeighbors(
   backend: Backend,
   name: string,
   config: Config,
-  options?: { maxDepth?: number; maxResults?: number },
+  options?: {
+    maxDepth?: number;
+    maxResults?: number;
+    relationshipTypes?: string[];
+  },
 ): Promise<Map<number, Array<{ name: string; type: string }>>> {
   const maxDepth = options?.maxDepth ?? 2;
   const maxResults = options?.maxResults ?? 50;
@@ -650,6 +696,10 @@ export async function getNeighbors(
 
     for (const entityId of frontier) {
       // Get neighbors via relationships (both directions)
+      const relFilter = options?.relationshipTypes?.length
+        ? ` AND r.type IN (${options.relationshipTypes.map(() => "?").join(", ")})`
+        : "";
+      const relParams = options?.relationshipTypes ?? [];
       const neighbors = await backend.all<{
         id: string;
         name: string;
@@ -658,12 +708,12 @@ export async function getNeighbors(
       }>(
         `SELECT e.id, e.name, e.type, r.id as rel_id FROM relationships r
          JOIN entities e ON e.id = r.to_entity
-         WHERE r.from_entity = ?
+         WHERE r.from_entity = ?${relFilter}
          UNION
          SELECT e.id, e.name, e.type, r.id as rel_id FROM relationships r
          JOIN entities e ON e.id = r.from_entity
-         WHERE r.to_entity = ?`,
-        [entityId, entityId],
+         WHERE r.to_entity = ?${relFilter}`,
+        [entityId, ...relParams, entityId, ...relParams],
       );
 
       for (const n of neighbors) {
@@ -819,20 +869,29 @@ export async function extractSubgraph(
 
 export async function getCentrality(
   backend: Backend,
-  options?: { mode?: "degree" | "pagerank"; limit?: number },
+  options?: {
+    mode?: "degree" | "pagerank";
+    limit?: number;
+    entityNames?: string[];
+  },
 ): Promise<Array<{ name: string; type: string; score: number }>> {
   const mode = options?.mode ?? "degree";
   const limit = options?.limit ?? 20;
 
   if (mode === "degree") {
+    const nameFilter = options?.entityNames?.length
+      ? ` AND e.name IN (${options.entityNames.map(() => "?").join(", ")})`
+      : "";
+    const nameParams = options?.entityNames ?? [];
     return backend.all<{ name: string; type: string; score: number }>(
       `SELECT e.name, e.type, COUNT(*) as score
        FROM entities e
        JOIN relationships r ON (e.id = r.from_entity OR e.id = r.to_entity)
+       WHERE 1=1${nameFilter}
        GROUP BY e.id, e.name, e.type
        ORDER BY score DESC
        LIMIT ?`,
-      [limit],
+      [...nameParams, limit],
     );
   }
 
@@ -889,8 +948,12 @@ export async function getCentrality(
     scores = newScores;
   }
 
+  const nameSet = options?.entityNames?.length
+    ? new Set(options.entityNames)
+    : null;
   const ranked = entities
     .map((e, i) => ({ name: e.name, type: e.type, score: scores[i]! }))
+    .filter((e) => !nameSet || nameSet.has(e.name))
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 
@@ -901,7 +964,9 @@ export async function getTimeline(
   backend: Backend,
   options?: {
     entityName?: string;
+    entityNames?: string[];
     entityType?: string;
+    entityTypes?: string[];
     limit?: number;
     offset?: number;
   },
@@ -918,13 +983,22 @@ export async function getTimeline(
   const conditions: string[] = [];
   const params: unknown[] = [];
 
-  if (options?.entityName) {
-    conditions.push("e.name = ?");
-    params.push(options.entityName);
+  // Support both singular and plural entity name filters
+  const namesList =
+    options?.entityNames ?? (options?.entityName ? [options.entityName] : []);
+  if (namesList.length > 0) {
+    const placeholders = namesList.map(() => "?").join(", ");
+    conditions.push(`e.name IN (${placeholders})`);
+    params.push(...namesList);
   }
-  if (options?.entityType) {
-    conditions.push("e.type = ?");
-    params.push(options.entityType);
+
+  // Support both singular and plural entity type filters
+  const typesList =
+    options?.entityTypes ?? (options?.entityType ? [options.entityType] : []);
+  if (typesList.length > 0) {
+    const placeholders = typesList.map(() => "?").join(", ");
+    conditions.push(`e.type IN (${placeholders})`);
+    params.push(...typesList);
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";

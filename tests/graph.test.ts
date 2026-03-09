@@ -122,11 +122,28 @@ describe("Entity CRUD", () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
 
-    const count = await deleteEntities(db, ["Auth"]);
-    expect(count).toBeGreaterThanOrEqual(1);
+    const result = await deleteEntities(db, ["Auth"]);
+    expect(result.deleted).toBeGreaterThanOrEqual(1);
 
     const row = await db.get("SELECT * FROM entities WHERE name = ?", ["Auth"]);
     expect(row).toBeUndefined();
+  });
+
+  test("deleteEntities with deleteOrphanObservations cleans up orphans", async () => {
+    db = await createTestDb();
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    await addObservations(db, [
+      { content: "Auth handles JWT", entity_names: ["Auth"] },
+    ]);
+
+    const result = await deleteEntities(db, ["Auth"], {
+      deleteOrphanObservations: true,
+    });
+    expect(result.deleted).toBe(1);
+    expect(result.orphanObservationsDeleted).toBe(1);
+
+    const obs = await db.all("SELECT * FROM observations");
+    expect(obs).toHaveLength(0);
   });
 });
 
@@ -291,7 +308,7 @@ describe("Entity Merging", () => {
       { content: "Handles JWT", entity_names: ["AuthModule"] },
     ]);
 
-    const result = await mergeEntities(db, "AuthModule", "Auth");
+    const result = await mergeEntities(db, ["AuthModule"], "Auth");
     expect(result.merged).toBe(true);
     expect(result.observationsMoved).toBe(1);
 
@@ -321,7 +338,7 @@ describe("Entity Merging", () => {
       { from_entity: "AuthOld", to_entity: "DB", type: "depends_on" },
     ]);
 
-    const result = await mergeEntities(db, "AuthOld", "Auth");
+    const result = await mergeEntities(db, ["AuthOld"], "Auth");
     expect(result.relationshipsMoved).toBe(1);
 
     // Relationship now from Auth → DB
@@ -355,7 +372,7 @@ describe("Entity Merging", () => {
       rel!.id,
     ]);
 
-    await mergeEntities(db, "AuthOld", "Auth");
+    await mergeEntities(db, ["AuthOld"], "Auth");
 
     // Should keep max strength (5.0)
     const remaining = await db.get<{ strength: number }>(
@@ -368,13 +385,61 @@ describe("Entity Merging", () => {
     expect(count).toHaveLength(1);
   });
 
+  test("merge multiple sources into target", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      {
+        name: "ReactJS",
+        type: "library",
+        properties: { version: "18" },
+      },
+      {
+        name: "React.js",
+        type: "library",
+        properties: { repo: "facebook/react" },
+      },
+      {
+        name: "React",
+        type: "library",
+        properties: { category: "frontend" },
+      },
+    ]);
+    await addObservations(db, [
+      { content: "ReactJS is a UI library", entity_names: ["ReactJS"] },
+      {
+        content: "React.js supports server components",
+        entity_names: ["React.js"],
+      },
+    ]);
+
+    const result = await mergeEntities(db, ["ReactJS", "React.js"], "React");
+    expect(result.sourcesMerged).toBe(2);
+    expect(result.observationsMoved).toBe(2);
+
+    // Target should have merged properties (target wins)
+    const target = await db.get<{ properties: string }>(
+      "SELECT properties FROM entities WHERE name = ?",
+      ["React"],
+    );
+    const props = JSON.parse(target!.properties);
+    expect(props.category).toBe("frontend"); // target's own
+    expect(props.version).toBe("18"); // from ReactJS
+    expect(props.repo).toBe("facebook/react"); // from React.js
+
+    // Sources should be deleted
+    const sources = await db.all(
+      "SELECT * FROM entities WHERE name IN ('ReactJS', 'React.js')",
+    );
+    expect(sources).toHaveLength(0);
+  });
+
   test("merge is transactional", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
 
     // Should throw — target doesn't exist
     try {
-      await mergeEntities(db, "Auth", "Nope");
+      await mergeEntities(db, ["Auth"], "Nope");
     } catch {
       /* expected */
     }
