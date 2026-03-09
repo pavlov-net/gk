@@ -4,21 +4,23 @@
 Before querying, understand what's in the graph:
 - `list_entity_types` — see all entity types and their counts
 - `get_stats` — overall graph shape (entity/relationship/observation counts,
-  averages, pyramid stats if applicable)
+  averages, temporal health)
 
 ## Step 2: Choose the Right Search Tool
 
 | Query type | Tool | Best for |
 |------------|------|----------|
 | Exact names, phrases | `search_keyword` | Known terms, specific names, quoted text |
-| Concepts, themes | `search_semantic` | Thematic queries, conceptual similarity |
-| Unsure | `search_hybrid` | Combines both via Reciprocal Rank Fusion |
-| Find entities | `search_entities` | Discover entities by description |
-| Find relationships | `search_relationships` | Discover edges by description |
+| Concepts + recency | `search_hybrid` | Combines FTS relevance with temporal scoring |
+| Find entities | `search_entities` | Discover entities by name |
 
-Adjust `search_hybrid` weights to favor one approach:
-- `keyword_weight=2.0` — emphasize exact matches
-- `semantic_weight=2.0` — emphasize conceptual similarity
+**search_hybrid** is the default choice — it factors in:
+- Full-text relevance (BM25 scoring)
+- Temporal retention (recently-accessed knowledge ranks higher)
+- Access frequency (Hebbian strengthening for frequently-used knowledge)
+- Staleness tier (overview > summary > detail weighting)
+
+Use **search_keyword** when you want raw text relevance without temporal adjustment.
 
 ## Step 3: Filter Results
 All observation searches support optional filters:
@@ -27,8 +29,9 @@ All observation searches support optional filters:
   {"chapter": "3"})
 
 ## Step 4: Read Full Text
-Search results return truncated snippets. Call `read_observation(observation_id)`
+Search results return content. Call `read_observation(observation_id)`
 to get the full content, metadata, linked entity names, and timestamp.
+Reading an observation also strengthens it (increases stability and access count).
 
 ## Step 5: Explore Graph Structure
 
@@ -44,15 +47,15 @@ to get the full content, metadata, linked entity names, and timestamp.
 **Analysis:**
 - `get_centrality(metric="degree")` — importance by connection count
 - `get_centrality(metric="pagerank")` — importance by graph structure
-- `get_timeline` — chronological observation history, filterable by entity or type
+- `get_timeline` — chronological observation history, filterable by entity names or types
 
 ## Query Strategies
 
 - **Factual questions**: `search_keyword` → `read_observation`
-- **Thematic exploration**: `search_semantic` → `get_neighbors`
+- **Conceptual exploration**: `search_hybrid` → `get_neighbors`
 - **Entity discovery**: `search_entities` → `get_entity`
-- **Relationship discovery**: `search_relationships`
 - **Temporal analysis**: `get_timeline`
 - **Importance ranking**: `get_centrality`
 - **Neighborhood map**: `extract_subgraph`
-- **High-level only**: search with `metadata_filters={"level": "overview"}`
+- **High-level only**: search with `metadata_filters: {"level": "overview"}`
+- **Source-specific**: search with `metadata_filters: {"chapter": "3"}`

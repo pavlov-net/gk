@@ -49,14 +49,14 @@ to relationships:
 - Link each observation to ALL relevant entities
 - Use metadata to track source (e.g., {"chapter": "3", "page": "42"})
 - Set confidence (0-1) if the information quality varies
-- Set provenance to track where the information came from
+- Set source to track where the information came from
 
 ### Observation Coverage Check
 After creating all observations, verify coverage in the **entity → observations**
 direction (the reverse of the per-observation linking above):
 
 1. **Every entity must have at least one observation.** Run `validate_graph` and
-   fix any `missing_observations` warnings before proceeding to summaries or review.
+   fix any `missing_observations` issues before proceeding to summaries or review.
 2. **Structural entities are commonly missed.** If you created container entities
    (chapters, sections, modules, sprints), they need observations too — at minimum
    a brief description of their scope and key contents.
@@ -68,12 +68,29 @@ This check is a **hard gate** when using the pyramid pattern — details must be
 complete before writing summaries. See the Pyramid Extraction guide for the full
 workflow.
 
-## 5. Review
-- Use validate_graph to check for quality issues
-- Use merge_entities to consolidate any duplicates
+## 5. Temporal Dynamics
+Knowledge in the graph uses adaptive temporal scoring:
+
+- **Hebbian strengthening**: Each time knowledge is accessed (searched, read, traversed),
+  its stability increases. Frequently-accessed knowledge becomes more resilient.
+- **Ebbinghaus decay**: Knowledge that isn't accessed gradually loses relevance in
+  search rankings. The decay rate depends on stability — high-stability knowledge
+  decays much slower.
+- **Staleness tiers**: Entities can be tagged as `detail`, `summary`, or `overview`.
+  Overview-tier knowledge has higher weight in search rankings, naturally staying
+  prominent even with less frequent access.
+
+You can influence temporal scoring by:
+- Setting `staleness_tier` on entities (overview > summary > detail)
+- Setting `confidence` to signal information quality
+- Frequent access naturally strengthens knowledge over time
+
+## 6. Review
+- Use `validate_graph` to check for quality issues (islands, orphans, duplicates)
+- Use `merge_entities` to consolidate any duplicates
 - Ensure entities have both relationships AND observations
 
 ## Tips
 - Build entities first, then relationships, then observations
-- Use search_entities to check if an entity already exists before creating
+- Use `search_entities` to check if an entity already exists before creating
 - Be consistent with naming and typing conventions across the graph
