@@ -39,7 +39,7 @@ function text(data: unknown) {
 }
 
 export function createServer(backend: Backend, config: Config): McpServer {
-  const server = new McpServer({ name: "gk", version: "2.0.0" });
+  const server = new McpServer({ name: "gk", version: "0.2.0" });
 
   // ── Tier 1: Foundation (CRUD) ──────────────────────────────────
 
