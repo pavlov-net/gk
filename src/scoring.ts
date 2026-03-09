@@ -25,7 +25,7 @@ export function computeRetention(
     (Date.now() - new Date(lastAccessed).getTime()) / 86_400_000;
   if (daysSince <= 0) return 1.0;
   const halfLife = stability * config.decay_base_days;
-  return Math.exp((-0.693 * daysSince) / halfLife);
+  return Math.exp((-Math.LN2 * daysSince) / halfLife);
 }
 
 /**
