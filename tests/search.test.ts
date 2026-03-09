@@ -1,10 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { GraphDB } from "../src/backend";
 import { loadConfig } from "../src/config";
+import type { Embedder } from "../src/embeddings";
 import { addEntities, updateEntities } from "../src/graph";
 import { addObservations } from "../src/observations";
-import { searchHybrid, searchKeyword } from "../src/search";
-import type { GraphDB } from "../src/backend";
+import { searchHybrid, searchKeyword, searchSemantic } from "../src/search";
 import { createTestDb } from "./helpers";
+
+function mockEmbedder(queryVector?: Float32Array): Embedder {
+  return {
+    embed: async (_texts: string[]) =>
+      _texts.map(() => queryVector ?? new Float32Array(768)),
+    isAvailable: async () => true,
+  };
+}
 
 const config = loadConfig();
 
@@ -180,5 +189,108 @@ describe("searchHybrid", () => {
       [obs!.id],
     );
     expect(row!.access_count).toBe(1);
+  });
+});
+
+describe("searchSemantic", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("returns observations ranked by vector similarity", async () => {
+    db = await createTestDb();
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+
+    const ts = new Date().toISOString();
+    await db.run(
+      "INSERT INTO observations (id, content, created_at) VALUES (?, ?, ?)",
+      ["obs1", "JWT authentication", ts],
+    );
+    const entityRow = await db.get<{ id: string }>(
+      "SELECT id FROM entities WHERE name = ?",
+      ["Auth"],
+    );
+    await db.run(
+      "INSERT INTO observation_entities (observation_id, entity_id) VALUES (?, ?)",
+      ["obs1", entityRow!.id],
+    );
+
+    const vec = new Float32Array(768);
+    vec[0] = 1.0;
+    await db.storeEmbeddings([{ id: "obs1", vector: vec }]);
+
+    const queryVec = new Float32Array(768);
+    queryVec[0] = 1.0;
+    const embedder = mockEmbedder(queryVec);
+
+    const results = await searchSemantic(db, "anything", embedder);
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe("obs1");
+    expect(results[0].score).toBeGreaterThan(0);
+    expect(results[0].entity_names).toContain("Auth");
+  });
+
+  test("returns empty when no embeddings exist", async () => {
+    db = await createTestDb();
+    const embedder = mockEmbedder();
+    const results = await searchSemantic(db, "anything", embedder);
+    expect(results).toHaveLength(0);
+  });
+});
+
+describe("searchHybrid with semantic", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("combines BM25 and semantic scores when embedder provided", async () => {
+    db = await createTestDb();
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    await addObservations(db, [
+      {
+        content: "Authentication module handles JWT tokens",
+        entity_names: ["Auth"],
+      },
+    ]);
+
+    // Store a vector for the observation
+    const obs = await db.get<{ id: string }>(
+      "SELECT id FROM observations LIMIT 1",
+    );
+    const vec = new Float32Array(768);
+    vec[0] = 1.0;
+    await db.storeEmbeddings([{ id: obs!.id, vector: vec }]);
+
+    const queryVec = new Float32Array(768);
+    queryVec[0] = 1.0;
+    const embedder = mockEmbedder(queryVec);
+
+    const results = await searchHybrid(
+      db,
+      "authentication",
+      config,
+      undefined,
+      embedder,
+    );
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results[0].score).toBeGreaterThan(0);
+  });
+
+  test("falls back to BM25-only when no embedder", async () => {
+    db = await createTestDb();
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    await addObservations(db, [
+      {
+        content: "Authentication module handles JWT tokens",
+        entity_names: ["Auth"],
+      },
+    ]);
+
+    const results = await searchHybrid(db, "authentication", config);
+    expect(results.length).toBeGreaterThanOrEqual(1);
   });
 });
