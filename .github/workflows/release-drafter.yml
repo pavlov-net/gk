@@ -22,15 +22,19 @@ jobs:
 
       - uses: actions/checkout@v6
 
-      - name: Update version files
+      - name: Update version in package.json
+        env:
+          VERSION: ${{ steps.drafter.outputs.resolved_version }}
         run: |
-          sed -i 's/^version = .*/version = "${{ steps.drafter.outputs.resolved_version }}"/g' pyproject.toml
+          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" package.json
 
       - name: Commit changes
+        env:
+          VERSION: ${{ steps.drafter.outputs.resolved_version }}
         run: |
           if ! git diff --quiet; then
             git config --global user.name "github-actions[bot]"
             git config --global user.email "github-actions[bot]@users.noreply.github.com"
-            git commit -am "Bump version to ${{ steps.drafter.outputs.resolved_version }}"
+            git commit -am "Bump version to $VERSION"
             git push
           fi
