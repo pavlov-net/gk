@@ -1,3 +1,4 @@
+import pkg from "../package.json";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Backend } from "./backend";
@@ -40,7 +41,7 @@ function text(data: unknown) {
 
 export function createServer(backend: Backend, config: Config): McpServer {
   const server = new McpServer(
-    { name: "gk", version: "0.2.0" },
+    { name: "gk", version: pkg.version },
     {
       instructions: `gk is an agentic knowledge graph server. You have 26 tools in 4 tiers:
 
