@@ -161,3 +161,70 @@ describe("GraphDB", () => {
     expect(results[0]!.name).toBe("Authentication Module");
   });
 });
+
+describe("vector storage", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("storeEmbeddings and searchByVector round-trip", async () => {
+    db = await createTestDb();
+
+    await db.run(
+      "INSERT INTO observations (id, content, created_at) VALUES (?, ?, ?)",
+      ["obs1", "test content", new Date().toISOString()],
+    );
+
+    const vector = new Float32Array(768);
+    vector[0] = 1.0;
+    await db.storeEmbeddings([{ id: "obs1", vector }]);
+
+    const queryVec = new Float32Array(768);
+    queryVec[0] = 1.0;
+    const results = await db.searchByVector(queryVec, 10);
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe("obs1");
+    expect(results[0].distance).toBeCloseTo(0, 1);
+  });
+
+  test("storeEmbeddings overwrites existing embedding", async () => {
+    db = await createTestDb();
+    await db.run(
+      "INSERT INTO observations (id, content, created_at) VALUES (?, ?, ?)",
+      ["obs1", "test content", new Date().toISOString()],
+    );
+
+    const v1 = new Float32Array(768);
+    v1[0] = 1.0;
+    await db.storeEmbeddings([{ id: "obs1", vector: v1 }]);
+
+    const v2 = new Float32Array(768);
+    v2[1] = 1.0;
+    await db.storeEmbeddings([{ id: "obs1", vector: v2 }]);
+
+    const query = new Float32Array(768);
+    query[1] = 1.0;
+    const results = await db.searchByVector(query, 10);
+    expect(results[0].id).toBe("obs1");
+  });
+
+  test("getEmbeddingCoverage reports counts", async () => {
+    db = await createTestDb();
+    await db.run(
+      "INSERT INTO observations (id, content, created_at) VALUES (?, ?, ?)",
+      ["obs1", "test content", new Date().toISOString()],
+    );
+
+    const coverage = await db.getEmbeddingCoverage();
+    expect(coverage.total).toBe(1);
+    expect(coverage.embedded).toBe(0);
+
+    const vec = new Float32Array(768);
+    await db.storeEmbeddings([{ id: "obs1", vector: vec }]);
+
+    const after = await db.getEmbeddingCoverage();
+    expect(after.embedded).toBe(1);
+  });
+});

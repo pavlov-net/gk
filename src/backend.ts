@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { SQL } from "bun";
+import * as sqliteVec from "sqlite-vec";
 
 // ── Result types ──────────────────────────────────────────────
 
@@ -23,7 +24,7 @@ export type Row = Record<string, unknown>;
 
 export interface Backend {
   /** Initialize connection and create schema if needed */
-  initialize(): Promise<void>;
+  initialize(embeddingDimensions?: number): Promise<void>;
 
   /** Close connection gracefully */
   close(): Promise<void>;
@@ -66,6 +67,20 @@ export interface Backend {
       limit?: number;
     },
   ): Promise<FTSEntityResult[]>;
+
+  /** Store vector embeddings for observations. Overwrites existing embeddings. */
+  storeEmbeddings(
+    items: Array<{ id: string; vector: Float32Array }>,
+  ): Promise<void>;
+
+  /** Search observations by vector similarity. Returns nearest neighbors ordered by distance. */
+  searchByVector(
+    query: Float32Array,
+    limit: number,
+  ): Promise<Array<{ id: string; distance: number }>>;
+
+  /** Report how many observations have/lack embeddings. */
+  getEmbeddingCoverage(): Promise<{ total: number; embedded: number }>;
 }
 
 // ── Dialect type ──────────────────────────────────────────────
@@ -275,16 +290,33 @@ export class GraphDB implements Backend {
     return db;
   }
 
-  async initialize(): Promise<void> {
+  async initialize(embeddingDimensions?: number): Promise<void> {
     if (this.sqlite) {
+      sqliteVec.load(this.sqlite);
       this.sqlite.run("PRAGMA journal_mode = WAL");
       this.sqlite.run("PRAGMA foreign_keys = ON");
       this.sqlite.run("PRAGMA cache_size = -65536"); // 64MB
       this.sqlite.run("PRAGMA busy_timeout = 5000");
       this.sqlite.exec(SQLITE_SCHEMA);
+
+      if (embeddingDimensions) {
+        this.sqlite.exec(
+          `CREATE VIRTUAL TABLE IF NOT EXISTS observation_vectors USING vec0(observation_id TEXT PRIMARY KEY, embedding float[${embeddingDimensions}])`,
+        );
+      }
     } else {
       for (const statement of MYSQL_SCHEMA) {
         await this.mysql!.unsafe(statement);
+      }
+      if (embeddingDimensions) {
+        await this.mysql!.unsafe(
+          `CREATE TABLE IF NOT EXISTS observation_vectors (
+            observation_id VARCHAR(16) PRIMARY KEY,
+            embedding VECTOR(${embeddingDimensions}),
+            VECTOR INDEX vec_idx (embedding),
+            FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+          )`,
+        );
       }
     }
   }
@@ -477,5 +509,64 @@ export class GraphDB implements Backend {
        LIMIT ?`,
       [query, query, ...(options?.types ?? []), limit],
     );
+  }
+
+  async storeEmbeddings(
+    items: Array<{ id: string; vector: Float32Array }>,
+  ): Promise<void> {
+    for (const { id, vector } of items) {
+      if (this.dialect === "sqlite") {
+        this.sqlite!.query(
+          "DELETE FROM observation_vectors WHERE observation_id = ?",
+        ).run(id);
+        this.sqlite!.query(
+          "INSERT INTO observation_vectors (observation_id, embedding) VALUES (?, ?)",
+        ).run(id, vector);
+      } else {
+        const vecStr = `[${Array.from(vector).join(",")}]`;
+        await this.mysql!.unsafe(
+          "INSERT INTO observation_vectors (observation_id, embedding) VALUES ($1, VEC_FromText($2)) ON DUPLICATE KEY UPDATE embedding = VEC_FromText($2)",
+          [id, vecStr],
+        );
+      }
+    }
+  }
+
+  async searchByVector(
+    query: Float32Array,
+    limit: number,
+  ): Promise<Array<{ id: string; distance: number }>> {
+    if (this.dialect === "sqlite") {
+      return this.sqlite!.query(
+        `SELECT observation_id AS id, distance
+           FROM observation_vectors
+           WHERE embedding MATCH ?
+           AND k = ?
+           ORDER BY distance`,
+      ).all(query, limit) as Array<{ id: string; distance: number }>;
+    }
+
+    const vecStr = `[${Array.from(query).join(",")}]`;
+    return this.all(
+      `SELECT observation_id AS id,
+              VEC_DISTANCE(embedding, VEC_FromText(?)) AS distance
+       FROM observation_vectors
+       ORDER BY distance
+       LIMIT ?`,
+      [vecStr, limit],
+    );
+  }
+
+  async getEmbeddingCoverage(): Promise<{ total: number; embedded: number }> {
+    const total = await this.get<{ count: number }>(
+      "SELECT COUNT(*) as count FROM observations",
+    );
+    const embedded = await this.get<{ count: number }>(
+      "SELECT COUNT(*) as count FROM observation_vectors",
+    );
+    return {
+      total: total?.count ?? 0,
+      embedded: embedded?.count ?? 0,
+    };
   }
 }
