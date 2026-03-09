@@ -134,9 +134,9 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
         content: z.string().describe("The full text to chunk"),
         entity_names: z.array(z.string()).describe("Entities to link to"),
         metadata: z.record(z.string(), z.unknown()).optional(),
-        confidence: z.number().min(0).max(1).optional(),
+        confidence: z.coerce.number().min(0).max(1).optional(),
         source: z.string().optional(),
-        max_chunk_size: z
+        max_chunk_size: z.coerce
           .number()
           .optional()
           .describe("Max chars per chunk (default 2000)"),
@@ -165,7 +165,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
             name: z.string(),
             type: z.string().optional(),
             properties: z.record(z.string(), z.unknown()).optional(),
-            confidence: z.number().min(0).max(1).optional(),
+            confidence: z.coerce.number().min(0).max(1).optional(),
             staleness_tier: z
               .enum(["detail", "summary", "overview"])
               .optional(),
@@ -269,7 +269,10 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
           .describe(
             "Filter by observation metadata key-value pairs (e.g. {chapter: '3'})",
           ),
-        limit: z.number().optional().describe("Max results (default 20)"),
+        limit: z.coerce
+          .number()
+          .optional()
+          .describe("Max results (default 20)"),
       },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -301,7 +304,10 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
           .describe(
             "Filter by observation metadata key-value pairs (e.g. {chapter: '3'})",
           ),
-        limit: z.number().optional().describe("Max results (default 20)"),
+        limit: z.coerce
+          .number()
+          .optional()
+          .describe("Max results (default 20)"),
       },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -348,7 +354,10 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
           .array(z.string())
           .optional()
           .describe("Filter by entity types"),
-        limit: z.number().optional().describe("Max results (default 20)"),
+        limit: z.coerce
+          .number()
+          .optional()
+          .describe("Max results (default 20)"),
       },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -554,7 +563,10 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
           .array(z.string())
           .optional()
           .describe("Only compute centrality for these entities"),
-        limit: z.number().optional().describe("Top N results (default 20)"),
+        limit: z.coerce
+          .number()
+          .optional()
+          .describe("Top N results (default 20)"),
       },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -583,8 +595,14 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
           .array(z.string())
           .optional()
           .describe("Filter by entity types"),
-        limit: z.number().optional().describe("Max results (default 50)"),
-        offset: z.number().optional().describe("Pagination offset (default 0)"),
+        limit: z.coerce
+          .number()
+          .optional()
+          .describe("Max results (default 50)"),
+        offset: z.coerce
+          .number()
+          .optional()
+          .describe("Pagination offset (default 0)"),
       },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -666,7 +684,11 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       description: "Set confidence score for multiple entities at once.",
       inputSchema: {
         names: z.array(z.string()).describe("Entity names to update"),
-        confidence: z.number().min(0).max(1).describe("New confidence value"),
+        confidence: z.coerce
+          .number()
+          .min(0)
+          .max(1)
+          .describe("New confidence value"),
       },
     },
     async ({ names, confidence }) => {
