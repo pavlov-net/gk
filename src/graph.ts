@@ -197,14 +197,10 @@ export async function deleteEntities(
 
   await backend.transaction(async () => {
     for (const name of names) {
-      const exists = await backend.get(
-        "SELECT 1 FROM entities WHERE name = ?",
-        [name],
-      );
-      if (exists) {
-        await backend.run("DELETE FROM entities WHERE name = ?", [name]);
-        deleted++;
-      }
+      const result = await backend.run("DELETE FROM entities WHERE name = ?", [
+        name,
+      ]);
+      if (result.changes > 0) deleted++;
     }
 
     if (options?.deleteOrphanObservations) {
@@ -705,12 +701,13 @@ export async function getNeighbors(
         name: string;
         type: string;
         rel_id: string;
+        rel_stability: number;
       }>(
-        `SELECT e.id, e.name, e.type, r.id as rel_id FROM relationships r
+        `SELECT e.id, e.name, e.type, r.id as rel_id, r.stability as rel_stability FROM relationships r
          JOIN entities e ON e.id = r.to_entity
          WHERE r.from_entity = ?${relFilter}
          UNION
-         SELECT e.id, e.name, e.type, r.id as rel_id FROM relationships r
+         SELECT e.id, e.name, e.type, r.id as rel_id, r.stability as rel_stability FROM relationships r
          JOIN entities e ON e.id = r.from_entity
          WHERE r.to_entity = ?${relFilter}`,
         [entityId, ...relParams, entityId, ...relParams],
@@ -724,7 +721,7 @@ export async function getNeighbors(
 
           // Bump relationship strength on traversed edge
           const newStability = Math.min(
-            1.0 * config.stability_growth,
+            n.rel_stability * config.stability_growth,
             config.max_stability,
           );
           await backend.run(

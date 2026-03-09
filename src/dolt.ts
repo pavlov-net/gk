@@ -56,10 +56,10 @@ CREATE TABLE IF NOT EXISTS relationships (
   FOREIGN KEY (to_entity) REFERENCES entities(id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_relationships_to ON relationships(to_entity);
-CREATE INDEX IF NOT EXISTS idx_obs_entities_entity ON observation_entities(entity_id);
-CREATE INDEX IF NOT EXISTS idx_observations_created ON observations(created_at);
-CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
+ALTER TABLE relationships ADD INDEX idx_relationships_to (to_entity);
+ALTER TABLE observation_entities ADD INDEX idx_obs_entities_entity (entity_id);
+ALTER TABLE observations ADD INDEX idx_observations_created (created_at);
+ALTER TABLE entities ADD INDEX idx_entities_type (type);
 `;
 
 export interface DoltConfig {
@@ -74,7 +74,6 @@ export class DoltBackend implements Backend {
   private pool: mysql.Pool;
 
   constructor(config: DoltConfig) {
-    this.config = config;
     this.pool = mysql.createPool({
       host: config.host,
       port: config.port,
