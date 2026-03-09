@@ -39,7 +39,7 @@ describe("MCP Server", () => {
     expect(names).toContain("get_entity");
     expect(names).toContain("validate_graph");
     expect(names).toContain("prune_stale");
-    expect(tools.length).toBeGreaterThanOrEqual(25);
+    expect(tools.length).toBeGreaterThanOrEqual(28);
   });
 
   test("lists resources", async () => {

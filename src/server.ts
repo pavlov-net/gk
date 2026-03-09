@@ -50,7 +50,7 @@ export function createServer(
   const server = new McpServer(
     { name: "gk", version: pkg.version },
     {
-      instructions: `gk is an agentic knowledge graph server. You have 26 tools in 4 tiers:
+      instructions: `gk is an agentic knowledge graph server. You have 28 tools in 4 tiers:
 
 **Tier 1 -- Build the graph (8 tools):**
 - add_entities, add_relationships, add_observations (batch creation)
@@ -59,10 +59,11 @@ export function createServer(
 - delete_entities (remove with cascade)
 - merge_entities (combine duplicate entities into one)
 
-**Tier 2 -- Search (4 tools):**
+**Tier 2 -- Search (5 tools):**
 - search_keyword (exact terms, names -- BM25)
-- search_hybrid (combines keyword relevance with temporal scoring -- use when unsure)
+- search (combines keyword relevance with semantic similarity and temporal scoring -- use when unsure)
 - search_entities (find entities by name)
+- list_entities (query entities by type without FTS)
 - read_observation (full text by ID after finding via search)
 
 **Tier 3 -- Navigate & analyze the graph (10 tools):**
