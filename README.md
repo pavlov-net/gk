@@ -1,158 +1,93 @@
-# gk — Agentic Knowledge Graph MCP Server
+# gk — Knowledge Graph MCP Server
 
-**A generic, agent-driven knowledge graph server built on SQLite with hybrid search.**
+**A knowledge graph server for LLM agents, built on Bun with SQLite and optional Dolt.**
 
-## The Problem
+## What It Does
 
-Large Language Models are powerful reasoners, but they lack persistent, structured memory. When an agent processes complex information — technical documentation, research papers, codebases, domain knowledge — the extracted understanding is lost when the conversation ends. Traditional RAG systems treat knowledge as flat document chunks, losing the rich structure of entities, relationships, and contextual observations that make information truly useful.
+gk is an [MCP](https://modelcontextprotocol.io/) server that gives agents tools to build, search, and analyze knowledge graphs. The schema is fully dynamic — the agent decides what entity types, relationship types, and properties fit the domain. One database per project.
 
-## The Research
+**26 tools across four tiers:**
 
-This project is inspired by [A-RAG: Agentic Retrieval-Augmented Generation](https://arxiv.org/abs/2602.03442), which demonstrates that exposing **hierarchical retrieval interfaces** (keyword search, semantic search, chunk read) as separate agent tools significantly outperforms single-shot retrieval pipelines. The key insight: agents make better retrieval decisions than fixed algorithms when given the right tools.
+| Tier | Tools | Purpose |
+|------|-------|---------|
+| Build (8) | `add_entities`, `add_relationships`, `add_observations`, `add_chunked_observation`, `update_entities`, `update_relationships`, `delete_entities`, `merge_entities` | Construct and maintain the graph |
+| Search (4) | `search_keyword`, `search_hybrid`, `search_entities`, `read_observation` | Find information via BM25 full-text search |
+| Navigate (10) | `get_entity`, `get_entity_profile`, `get_relationships`, `list_entity_types`, `find_paths`, `get_neighbors`, `extract_subgraph`, `get_centrality`, `get_timeline`, `validate_graph` | Traverse and analyze graph structure |
+| Maintain (4) | `get_stats`, `prune_stale`, `get_health_report`, `bulk_update_confidence` | Monitor and maintain graph quality |
 
-## The Approach
+**Built-in domain guidance** — Four guides ship as both MCP prompts and resources, covering extraction, pyramid observations, querying, and review.
 
-gk is a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that provides agents with tools to both **build** and **query** a knowledge graph. The schema is fully dynamic — the agent decides what entity types, relationship types, and properties make sense for the domain. One database per project.
-
-**24 tools across three tiers** (following A-RAG):
-- **Graph construction** — Batch-add entities, relationships, and observations with auto-embedding. Chunked ingestion for long documents. Entity merging for deduplication.
-- **Multi-modal search** — Keyword (BM25 via FTS5), semantic (vector via sqlite-vec), hybrid (Reciprocal Rank Fusion), plus direct entity and relationship search.
-- **Graph traversal & analysis** — Entity profiles, path finding, multi-hop exploration, subgraph extraction, centrality (degree/PageRank), timeline, statistics, and quality validation.
-
-**Built-in domain guidance** — Four guide documents ship as both MCP prompts (for interactive use) and MCP resources (for programmatic agent access), covering extraction, pyramid observations, querying, and graph maintenance.
-
-**Two workflows**:
-- **Input**: An agent reads source material and extracts entities, relationships, and observations into the graph.
-- **Output**: A different agent queries the graph to reason about the domain — finding connections, identifying gaps, answering questions.
+**Temporal dynamics** — Hebbian strengthening on access (stability grows), Ebbinghaus decay over time (unused knowledge fades in search rankings). Overview-tier knowledge is architecturally durable; details are ephemeral.
 
 ## Technology
 
-- **SQLite** — Single-file embedded database. No server to run.
-- **[sqlite-vec](https://github.com/asg017/sqlite-vec)** — Vector similarity search extension for SQLite.
-- **FTS5** — Built-in full-text search with BM25 ranking.
-- **[LiteLLM](https://github.com/BerriAI/litellm)** — Provider-agnostic embedding generation (OpenAI, Cohere, Ollama, etc.).
-- **[FastMCP](https://github.com/modelcontextprotocol/python-sdk)** — Official Python SDK for Model Context Protocol servers.
+- **[Bun](https://bun.sh)** — Runtime, test runner, package manager
+- **SQLite** via `bun:sqlite` — Embedded database with FTS5 full-text search
+- **[Dolt](https://www.dolthub.com/)** (optional) — MySQL-compatible database with git-like versioning, via `Bun.SQL`
+- **[MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk)** — Model Context Protocol server
 
-## Installation
+## Quick Start
 
 ```bash
-# Clone the repository
+# Clone and install
 git clone https://github.com/yourusername/gk.git
-cd gk
+cd gk && bun install
 
-# Install with uv
-uv sync
+# Initialize a database
+bun run . init
+
+# Run tests
+bun test
 ```
-
-## Configuration
-
-Set environment variables to configure the server:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GK_DB_PATH` | `knowledge.db` | Path to the SQLite database file |
-| `GK_EMBEDDING_MODEL` | `ollama/nomic-embed-text` | LiteLLM model identifier for embeddings |
-| `GK_EMBEDDING_DIM` | `768` | Embedding vector dimension |
-| `GK_EMBEDDING_BATCH_SIZE` | `100` | Max items per embedding API call |
-
-The default configuration uses a local [Ollama](https://ollama.com/) instance with `nomic-embed-text` — no API key needed. Just run `ollama pull nomic-embed-text` to get started.
-
-To use OpenAI instead, set `GK_EMBEDDING_MODEL=text-embedding-3-small`, `GK_EMBEDDING_DIM=1536`, and `OPENAI_API_KEY`.
-
-## Usage
 
 ### As an MCP Server
 
-Add to your Claude Code MCP configuration (`.mcp.json`):
+Add to your `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "gk": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/gk", "gk"],
+      "command": "bun",
+      "args": ["run", "--bun", "/path/to/gk"],
       "env": {
-        "GK_DB_PATH": "/path/to/your/project/knowledge.db",
-        "OPENAI_API_KEY": "sk-..."
+        "GK_DB_PATH": "/path/to/your/project/knowledge.db"
       }
     }
   }
 }
 ```
 
-### Tools Overview
+## Configuration
 
-**Graph Construction (8 tools)**
-- `add_entities` — Batch-add entities with auto-embedding. Upserts on name+type.
-- `add_relationships` — Batch-add typed edges between entities.
-- `add_observations` — Batch-add text observations linked to entities. Auto-embeds + FTS5.
-- `add_chunked_observation` — Auto-split long text into linked chunks at sentence boundaries.
-- `update_entities` — Update entity properties, type, or name. Re-embeds if content changes.
-- `update_relationships` — Update relationship type or properties. Re-embeds if content changes.
-- `delete_entities` — Remove entities with cascade to relationships and observation links.
-- `merge_entities` — Combine duplicate entities, transferring all relationships and observations.
+Environment variables or `gk.yml`:
 
-**Retrieval (6 tools)**
-- `search_keyword` — BM25 full-text search via FTS5. Filter by entity types or metadata.
-- `search_semantic` — Vector similarity search via sqlite-vec. Filter by entity types or metadata.
-- `search_hybrid` — Reciprocal Rank Fusion combining keyword + semantic with adjustable weights.
-- `search_entities` — Semantic search over entities by name and type.
-- `search_relationships` — Semantic search over relationships.
-- `read_observation` — Full text retrieval by observation ID.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GK_BACKEND` | `sqlite` | Backend: `sqlite` or `dolt` |
+| `GK_DB_PATH` | `.gk/knowledge.db` | SQLite database path |
+| `GK_DOLT_HOST` | `127.0.0.1` | Dolt server host |
+| `GK_DOLT_PORT` | `3307` | Dolt server port |
+| `GK_DOLT_DATABASE` | `gk` | Dolt database name |
+| `GK_DOLT_USER` | `root` | Dolt user |
+| `GK_DOLT_PASSWORD` | *(empty)* | Dolt password |
+| `GK_DECAY_BASE_DAYS` | `7` | Temporal decay half-life |
 
-**Graph Traversal & Analysis (10 tools)**
-- `get_entity` — Full entity profile with relationships and observation summaries.
-- `get_relationships` — Query edges by entity and/or type.
-- `list_entity_types` — Introspection: all entity types and their counts.
-- `find_paths` — Shortest paths between entities via recursive CTE.
-- `get_neighbors` — Multi-hop traversal from an entity.
-- `extract_subgraph` — Pull out a connected neighborhood around seed entities.
-- `get_centrality` — Entity importance via degree count or PageRank.
-- `get_timeline` — Observations in chronological order, filtered by entity or type.
-- `get_stats` — Aggregate graph statistics: counts, type distributions, coverage metrics.
-- `validate_graph` — Quality checks: island entities, orphan observations, duplicate candidates.
-
-### Guides
-
-Four domain guides ship as both MCP **prompts** (interactive slash commands) and MCP **resources** (readable programmatically by agents):
+## Guides
 
 | Resource URI | Prompt | Description |
 |---|---|---|
-| `gk://guides/extraction` | `extraction_guide` | Extracting entities and relationships from text |
-| `gk://guides/pyramid` | `pyramid_extraction` | Hierarchical observations: detail, summary, overview levels |
-| `gk://guides/query` | `query_guide` | Searching and exploring an existing knowledge graph |
-| `gk://guides/review` | `review_and_refine` | Reviewing and improving graph quality |
-
-### Provenance & Confidence
-
-All entities, relationships, and observations support optional tracking fields:
-
-- **`confidence`** (float, 0–1) — How reliable the information is.
-- **`provenance`** (string) — Free-text source attribution (e.g., "chapter 3", "user interview 2024-01-15").
-
-## Use Cases
-
-- **Research synthesis** — Extract concepts, findings, and relationships from papers. Query across the corpus.
-- **Codebase understanding** — Map modules, dependencies, patterns, and design decisions. Query for architectural insight.
-- **Domain modeling** — Build knowledge graphs for any domain (legal, medical, financial). Query for analysis.
-- **Content analysis** — Extract structure from documents, books, or reports. Query for consistency and gaps.
-- **Project memory** — Persist agent-extracted knowledge across sessions. Query to resume context.
+| `gk://guides/extraction` | `extraction` | Extracting entities and relationships from text |
+| `gk://guides/pyramid` | `pyramid` | Hierarchical observations: detail/summary/overview |
+| `gk://guides/query` | `query` | Searching and exploring the graph |
+| `gk://guides/review` | `review` | Reviewing and improving graph quality |
 
 ## Development
 
 ```bash
-# Install dev dependencies
-uv sync --group dev
-
-# Run type checking
-uv run pyright src/
-
-# Run tests
-uv run pytest tests/
-
-# Run the server directly
-uv run gk
+bun test              # Run tests (96 pass, 7 Dolt tests skip without GK_DOLT_HOST)
+bun run check         # Biome lint + format check
 ```
 
 ## License

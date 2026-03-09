@@ -2,8 +2,8 @@
   "mcpServers": {
     "gk": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--directory", ".", "gk"],
+      "command": "bun",
+      "args": ["run", "--bun", "."],
       "env": {
         "GK_DB_PATH": "./knowledge.db"
       }
