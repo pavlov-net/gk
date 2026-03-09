@@ -6,9 +6,11 @@ import {
   deleteEntities,
   getEntity,
   getRelationships,
+  mergeEntities,
   updateEntities,
   updateRelationships,
 } from "../src/graph";
+import { addObservations } from "../src/observations";
 import type { SqliteBackend } from "../src/sqlite";
 import { createTestDb } from "./helpers";
 
@@ -267,5 +269,118 @@ describe("Relationship CRUD", () => {
       [rel!.id],
     );
     expect(JSON.parse(row!.properties)).toEqual({ critical: true });
+  });
+});
+
+describe("Entity Merging", () => {
+  let db: SqliteBackend;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("merge transfers observations from source to target", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "AuthModule", type: "component" },
+      { name: "Auth", type: "component" },
+    ]);
+    await addObservations(db, [
+      { content: "Handles JWT", entity_names: ["AuthModule"] },
+    ]);
+
+    const result = await mergeEntities(db, "AuthModule", "Auth");
+    expect(result.merged).toBe(true);
+    expect(result.observationsMoved).toBe(1);
+
+    // Source deleted
+    const source = await db.get("SELECT * FROM entities WHERE name = ?", [
+      "AuthModule",
+    ]);
+    expect(source).toBeUndefined();
+
+    // Observation now linked to target
+    const links = await db.all(
+      `SELECT e.name FROM observation_entities oe
+       JOIN entities e ON e.id = oe.entity_id`,
+    );
+    expect(links).toHaveLength(1);
+    expect((links[0] as { name: string }).name).toBe("Auth");
+  });
+
+  test("merge redirects relationships", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "AuthOld", type: "component" },
+      { name: "Auth", type: "component" },
+      { name: "DB", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "AuthOld", to_entity: "DB", type: "depends_on" },
+    ]);
+
+    const result = await mergeEntities(db, "AuthOld", "Auth");
+    expect(result.relationshipsMoved).toBe(1);
+
+    // Relationship now from Auth → DB
+    const rels = await db.all<{ from_entity: string }>(
+      `SELECT ef.name as from_entity FROM relationships r
+       JOIN entities ef ON ef.id = r.from_entity`,
+    );
+    expect(rels).toHaveLength(1);
+    expect(rels[0]!.from_entity).toBe("Auth");
+  });
+
+  test("merge handles duplicate relationships by keeping max strength", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "AuthOld", type: "component" },
+      { name: "Auth", type: "component" },
+      { name: "DB", type: "component" },
+    ]);
+    await addRelationships(db, [
+      { from_entity: "AuthOld", to_entity: "DB", type: "depends_on" },
+      { from_entity: "Auth", to_entity: "DB", type: "depends_on" },
+    ]);
+
+    // Boost AuthOld's strength
+    const rel = await db.get<{ id: string }>(
+      `SELECT r.id FROM relationships r
+       JOIN entities ef ON ef.id = r.from_entity
+       WHERE ef.name = 'AuthOld'`,
+    );
+    await db.run("UPDATE relationships SET strength = 5.0 WHERE id = ?", [
+      rel!.id,
+    ]);
+
+    await mergeEntities(db, "AuthOld", "Auth");
+
+    // Should keep max strength (5.0)
+    const remaining = await db.get<{ strength: number }>(
+      "SELECT strength FROM relationships WHERE type = 'depends_on'",
+    );
+    expect(remaining!.strength).toBe(5.0);
+
+    // Only one relationship should remain
+    const count = await db.all("SELECT * FROM relationships");
+    expect(count).toHaveLength(1);
+  });
+
+  test("merge is transactional", async () => {
+    db = await createTestDb();
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+
+    // Should throw — target doesn't exist
+    try {
+      await mergeEntities(db, "Auth", "Nope");
+    } catch {
+      /* expected */
+    }
+
+    // Source should still exist (transaction rolled back)
+    const entity = await db.get("SELECT * FROM entities WHERE name = ?", [
+      "Auth",
+    ]);
+    expect(entity).toBeDefined();
   });
 });

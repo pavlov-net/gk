@@ -363,3 +363,123 @@ export async function updateRelationships(
 
   return updated;
 }
+
+// --- Entity Merging ---
+
+export async function mergeEntities(
+  backend: Backend,
+  sourceName: string,
+  targetName: string,
+): Promise<{
+  merged: boolean;
+  observationsMoved: number;
+  relationshipsMoved: number;
+}> {
+  const source = await backend.get<{ id: string }>(
+    "SELECT id FROM entities WHERE name = ?",
+    [sourceName],
+  );
+  const target = await backend.get<{ id: string }>(
+    "SELECT id FROM entities WHERE name = ?",
+    [targetName],
+  );
+
+  if (!source) throw new Error(`Source entity not found: ${sourceName}`);
+  if (!target) throw new Error(`Target entity not found: ${targetName}`);
+
+  let observationsMoved = 0;
+  let relationshipsMoved = 0;
+
+  await backend.transaction(async () => {
+    // Move observations: update junction table, ignore duplicates
+    const obsLinks = await backend.all<{ observation_id: string }>(
+      "SELECT observation_id FROM observation_entities WHERE entity_id = ?",
+      [source.id],
+    );
+    for (const link of obsLinks) {
+      const existing = await backend.get(
+        "SELECT 1 FROM observation_entities WHERE observation_id = ? AND entity_id = ?",
+        [link.observation_id, target.id],
+      );
+      if (existing) {
+        await backend.run(
+          "DELETE FROM observation_entities WHERE observation_id = ? AND entity_id = ?",
+          [link.observation_id, source.id],
+        );
+      } else {
+        await backend.run(
+          "UPDATE observation_entities SET entity_id = ? WHERE observation_id = ? AND entity_id = ?",
+          [target.id, link.observation_id, source.id],
+        );
+        observationsMoved++;
+      }
+    }
+
+    // Move outgoing relationships
+    const outRels = await backend.all<{
+      id: string;
+      to_entity: string;
+      type: string;
+      strength: number;
+    }>(
+      "SELECT id, to_entity, type, strength FROM relationships WHERE from_entity = ?",
+      [source.id],
+    );
+    for (const rel of outRels) {
+      const dup = await backend.get<{ id: string; strength: number }>(
+        "SELECT id, strength FROM relationships WHERE from_entity = ? AND to_entity = ? AND type = ?",
+        [target.id, rel.to_entity, rel.type],
+      );
+      if (dup) {
+        const maxStrength = Math.max(dup.strength, rel.strength);
+        await backend.run(
+          "UPDATE relationships SET strength = ? WHERE id = ?",
+          [maxStrength, dup.id],
+        );
+        await backend.run("DELETE FROM relationships WHERE id = ?", [rel.id]);
+      } else {
+        await backend.run(
+          "UPDATE relationships SET from_entity = ? WHERE id = ?",
+          [target.id, rel.id],
+        );
+        relationshipsMoved++;
+      }
+    }
+
+    // Move incoming relationships
+    const inRels = await backend.all<{
+      id: string;
+      from_entity: string;
+      type: string;
+      strength: number;
+    }>(
+      "SELECT id, from_entity, type, strength FROM relationships WHERE to_entity = ?",
+      [source.id],
+    );
+    for (const rel of inRels) {
+      const dup = await backend.get<{ id: string; strength: number }>(
+        "SELECT id, strength FROM relationships WHERE from_entity = ? AND to_entity = ? AND type = ?",
+        [rel.from_entity, target.id, rel.type],
+      );
+      if (dup) {
+        const maxStrength = Math.max(dup.strength, rel.strength);
+        await backend.run(
+          "UPDATE relationships SET strength = ? WHERE id = ?",
+          [maxStrength, dup.id],
+        );
+        await backend.run("DELETE FROM relationships WHERE id = ?", [rel.id]);
+      } else {
+        await backend.run(
+          "UPDATE relationships SET to_entity = ? WHERE id = ?",
+          [target.id, rel.id],
+        );
+        relationshipsMoved++;
+      }
+    }
+
+    // Delete source entity
+    await backend.run("DELETE FROM entities WHERE id = ?", [source.id]);
+  });
+
+  return { merged: true, observationsMoved, relationshipsMoved };
+}
