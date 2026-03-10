@@ -297,6 +297,9 @@ export class GraphDB implements Backend {
           `CREATE VIRTUAL TABLE IF NOT EXISTS observation_vectors USING vec0(observation_id TEXT PRIMARY KEY, embedding float[${embeddingDimensions}] distance_metric=cosine)`,
         );
       }
+
+      // Auto-migrate: drop removed access_count column
+      this.migrateDropAccessCount();
     } else {
       for (const statement of MYSQL_SCHEMA) {
         await this.mysql!.unsafe(statement);
@@ -312,6 +315,19 @@ export class GraphDB implements Backend {
         await this.mysql!.unsafe(
           "CREATE VECTOR INDEX IF NOT EXISTS vec_idx ON observation_vectors(embedding)",
         );
+      }
+    }
+  }
+
+  private migrateDropAccessCount(): void {
+    if (!this.sqlite) return;
+    const tables = ["entities", "observations", "relationships"];
+    for (const table of tables) {
+      const cols = this.sqlite
+        .query(`PRAGMA table_info(${table})`)
+        .all() as Array<{ name: string }>;
+      if (cols.some((c) => c.name === "access_count")) {
+        this.sqlite.exec(`ALTER TABLE ${table} DROP COLUMN access_count`);
       }
     }
   }
