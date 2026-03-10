@@ -11,7 +11,8 @@ export interface SearchOptions {
 }
 
 function distanceToSimilarity(distance: number): number {
-  return 1 / (1 + distance);
+  // Cosine distance ranges 0 (identical) to 2 (opposite)
+  return 1 - distance / 2;
 }
 
 async function fetchEntityNames(

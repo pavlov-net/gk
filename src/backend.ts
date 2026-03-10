@@ -294,7 +294,7 @@ export class GraphDB implements Backend {
 
       if (embeddingDimensions) {
         this.sqlite.exec(
-          `CREATE VIRTUAL TABLE IF NOT EXISTS observation_vectors USING vec0(observation_id TEXT PRIMARY KEY, embedding float[${embeddingDimensions}])`,
+          `CREATE VIRTUAL TABLE IF NOT EXISTS observation_vectors USING vec0(observation_id TEXT PRIMARY KEY, embedding float[${embeddingDimensions}] distance_metric=cosine)`,
         );
       }
     } else {
@@ -566,7 +566,7 @@ export class GraphDB implements Backend {
     const vecStr = `[${Array.from(query).join(",")}]`;
     return this.all(
       `SELECT observation_id AS id,
-              VEC_DISTANCE_EUCLIDEAN(embedding, VEC_FromText(?)) AS distance
+              VEC_DISTANCE_COSINE(embedding, VEC_FromText(?)) AS distance
        FROM observation_vectors
        ORDER BY distance
        LIMIT ?`,
