@@ -19,7 +19,7 @@ src/search.ts     ← Search orchestration (keyword, semantic, hybrid with tempo
 src/scoring.ts    ← Temporal scoring (Hebbian + Ebbinghaus)
 src/embeddings.ts ← Embedder interface + OllamaEmbedder (nomic-embed-text, 768d)
 src/maintenance.ts ← prune_stale, get_health_report, bulk_update_confidence
-src/server.ts     ← MCP server (28 tools, 4 resources, 4 prompts)
+src/server.ts     ← MCP server (27 tools + 1 optional, 4 resources, 4 prompts)
 src/index.ts      ← Entry point
 src/config.ts     ← Zod config schema + env/file loading
 src/types.ts      ← Shared types (EntityInput, StalenessTier, etc.)

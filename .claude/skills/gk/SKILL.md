@@ -9,7 +9,7 @@ description: >-
 
 # Working with gk Knowledge Graph
 
-gk is an MCP server providing 26 tools in 4 tiers for building, searching,
+gk is an MCP server providing 27 tools in 4 tiers for building, searching,
 analyzing, and maintaining knowledge graphs. The server ships with guide
 resources containing canonical domain guidance — always read those rather
 than relying on remembered patterns.
@@ -31,8 +31,8 @@ On first connection or when unsure about available tools:
 add_chunked_observation, update_entities, update_relationships, delete_entities,
 merge_entities
 
-**Tier 2 — Search (4 tools):** search_keyword, search_hybrid (default),
-search_entities, read_observation
+**Tier 2 — Search (5 tools):** search_keyword, search (default, hybrid BM25 + semantic),
+search_entities, list_entities, read_observation
 
 **Tier 3 — Navigate & Analyze (10 tools):** get_entity, get_entity_profile,
 get_relationships, list_entity_types, find_paths, get_neighbors,

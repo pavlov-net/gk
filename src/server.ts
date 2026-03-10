@@ -50,7 +50,7 @@ export function createServer(
   const server = new McpServer(
     { name: "gk", version: pkg.version },
     {
-      instructions: `gk is an agentic knowledge graph server. You have 28 tools in 4 tiers:
+      instructions: `gk is an agentic knowledge graph server. You have 27 tools in 4 tiers:
 
 **Tier 1 -- Build the graph (8 tools):**
 - add_entities, add_relationships, add_observations (batch creation)
