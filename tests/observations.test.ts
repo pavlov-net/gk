@@ -24,9 +24,11 @@ describe("Observation CRUD", () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
 
-    const results = await addObservations(db, [
-      { content: "Auth uses JWT tokens", entity_names: ["Auth"] },
-    ]);
+    const results = await addObservations(
+      db,
+      [{ content: "Auth uses JWT tokens", entity_names: ["Auth"] }],
+      config,
+    );
     expect(results).toHaveLength(1);
     expect(results[0]!.entity_names).toEqual(["Auth"]);
   });
@@ -38,12 +40,16 @@ describe("Observation CRUD", () => {
       { name: "DB", type: "component" },
     ]);
 
-    const results = await addObservations(db, [
-      {
-        content: "Auth reads user data from DB",
-        entity_names: ["Auth", "DB"],
-      },
-    ]);
+    const results = await addObservations(
+      db,
+      [
+        {
+          content: "Auth reads user data from DB",
+          entity_names: ["Auth", "DB"],
+        },
+      ],
+      config,
+    );
     expect(results[0]!.entity_names).toEqual(["Auth", "DB"]);
 
     // Verify junction table
@@ -57,43 +63,75 @@ describe("Observation CRUD", () => {
   test("addObservations throws for missing entity", async () => {
     db = await createTestDb();
     expect(
-      addObservations(db, [{ content: "test", entity_names: ["Nope"] }]),
+      addObservations(
+        db,
+        [{ content: "test", entity_names: ["Nope"] }],
+        config,
+      ),
     ).rejects.toThrow("Entity not found: Nope");
   });
 
   test("readObservation returns content and entity names", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
-    const [result] = await addObservations(db, [
-      { content: "Auth uses JWT", entity_names: ["Auth"] },
-    ]);
+    const [result] = await addObservations(
+      db,
+      [{ content: "Auth uses JWT", entity_names: ["Auth"] }],
+      config,
+    );
 
-    const obs = await readObservation(db, result!.id, config);
+    const obs = await readObservation(db, result!.id);
     expect(obs).toBeDefined();
     expect(obs!.content).toBe("Auth uses JWT");
     expect(obs!.entity_names).toEqual(["Auth"]);
   });
 
-  test("readObservation bumps access_count and stability", async () => {
+  test("readObservation is read-only — does not bump temporal fields", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
-    const [result] = await addObservations(db, [
-      { content: "Auth uses JWT", entity_names: ["Auth"] },
+    const [result] = await addObservations(
+      db,
+      [{ content: "Auth uses JWT", entity_names: ["Auth"] }],
+      config,
+    );
+
+    await readObservation(db, result!.id);
+    await readObservation(db, result!.id);
+
+    const row = await db.get<{
+      stability: number;
+      last_accessed: string | null;
+    }>("SELECT stability, last_accessed FROM observations WHERE id = ?", [
+      result!.id,
     ]);
-
-    const first = await readObservation(db, result!.id, config);
-    expect(first!.access_count).toBe(1);
-    expect(first!.stability).toBeCloseTo(1.2);
-
-    const second = await readObservation(db, result!.id, config);
-    expect(second!.access_count).toBe(2);
-    expect(second!.stability).toBeCloseTo(1.44);
+    expect(row!.stability).toBe(1.0);
+    expect(row!.last_accessed).toBeNull();
   });
 
   test("readObservation returns undefined for missing", async () => {
     db = await createTestDb();
-    const obs = await readObservation(db, "nope", config);
+    const obs = await readObservation(db, "nope");
     expect(obs).toBeUndefined();
+  });
+
+  test("addObservations bumps entity stability (write-only temporal)", async () => {
+    db = await createTestDb();
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+
+    await addObservations(
+      db,
+      [{ content: "Auth uses JWT", entity_names: ["Auth"] }],
+      config,
+    );
+
+    const row = await db.get<{
+      stability: number;
+      last_accessed: string | null;
+    }>("SELECT stability, last_accessed FROM entities WHERE name = ?", [
+      "Auth",
+    ]);
+    expect(row!.stability).toBeGreaterThan(1.0);
+    expect(row!.last_accessed).not.toBeNull();
   });
 
   test("addChunkedObservation splits at sentence boundaries", async () => {
@@ -105,9 +143,15 @@ describe("Observation CRUD", () => {
       (_, i) => `Sentence number ${i + 1} about the authentication module.`,
     ).join(" ");
 
-    const results = await addChunkedObservation(db, longContent, ["Auth"], {
-      maxChunkSize: 200,
-    });
+    const results = await addChunkedObservation(
+      db,
+      longContent,
+      ["Auth"],
+      config,
+      {
+        maxChunkSize: 200,
+      },
+    );
 
     expect(results.length).toBeGreaterThan(1);
 
@@ -117,7 +161,7 @@ describe("Observation CRUD", () => {
     }
 
     // Check chunk metadata
-    const obs = await readObservation(db, results[0]!.id, config);
+    const obs = await readObservation(db, results[0]!.id);
     const meta = JSON.parse(obs!.metadata);
     expect(meta.chunk_index).toBe(0);
     expect(meta.chunk_total).toBe(results.length);
@@ -148,6 +192,7 @@ describe("addObservations with embedder", () => {
     await addObservations(
       db,
       [{ content: "JWT handles tokens", entity_names: ["Auth"] }],
+      config,
       embedder,
     );
 
@@ -159,9 +204,11 @@ describe("addObservations with embedder", () => {
   test("succeeds without embedder (no vectors stored)", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
-    const results = await addObservations(db, [
-      { content: "JWT handles tokens", entity_names: ["Auth"] },
-    ]);
+    const results = await addObservations(
+      db,
+      [{ content: "JWT handles tokens", entity_names: ["Auth"] }],
+      config,
+    );
 
     expect(results).toHaveLength(1);
     const coverage = await db.getEmbeddingCoverage();
@@ -180,6 +227,7 @@ describe("addObservations with embedder", () => {
     const results = await addObservations(
       db,
       [{ content: "JWT handles tokens", entity_names: ["Auth"] }],
+      config,
       embedder,
     );
 
@@ -201,10 +249,14 @@ describe("backfillEmbeddings", () => {
     const embedder = mockEmbedder();
 
     await addEntities(db, [{ name: "Auth", type: "component" }]);
-    await addObservations(db, [
-      { content: "JWT handles tokens", entity_names: ["Auth"] },
-      { content: "OAuth2 flow", entity_names: ["Auth"] },
-    ]);
+    await addObservations(
+      db,
+      [
+        { content: "JWT handles tokens", entity_names: ["Auth"] },
+        { content: "OAuth2 flow", entity_names: ["Auth"] },
+      ],
+      config,
+    );
 
     const before = await db.getEmbeddingCoverage();
     expect(before.embedded).toBe(0);
@@ -225,6 +277,7 @@ describe("backfillEmbeddings", () => {
     await addObservations(
       db,
       [{ content: "JWT handles tokens", entity_names: ["Auth"] }],
+      config,
       embedder,
     );
 
@@ -241,6 +294,7 @@ describe("backfillEmbeddings", () => {
     await addObservations(
       db,
       [{ content: "JWT handles tokens", entity_names: ["Auth"] }],
+      config,
       embedder,
     );
 

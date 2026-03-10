@@ -175,10 +175,9 @@ export async function searchHybrid(
   const temporalRows = await backend.all<{
     id: string;
     stability: number;
-    access_count: number;
     last_accessed: string | null;
   }>(
-    `SELECT id, stability, access_count, last_accessed
+    `SELECT id, stability, last_accessed
      FROM observations WHERE id IN (${placeholders})`,
     allIds,
   );
@@ -250,7 +249,6 @@ export async function searchHybrid(
         fts_score: textScore,
         stability: temporal.stability,
         last_accessed: temporal.last_accessed,
-        access_count: temporal.access_count,
         staleness_tier: tier,
       },
       config,
@@ -267,21 +265,6 @@ export async function searchHybrid(
 
   scored.sort((a, b) => b.finalScore - a.finalScore);
   const topResults = scored.slice(0, limit);
-
-  // Batch-bump access counts on returned observations
-  if (topResults.length > 0) {
-    const ts = new Date().toISOString();
-    const topIds = topResults.map((r) => r.id);
-    const topPlaceholders = topIds.map(() => "?").join(", ");
-    await backend.run(
-      `UPDATE observations SET
-        access_count = access_count + 1,
-        stability = MIN(stability * ?, ?),
-        last_accessed = ?
-      WHERE id IN (${topPlaceholders})`,
-      [config.stability_growth, config.max_stability, ts, ...topIds],
-    );
-  }
 
   return topResults.map(({ finalScore: _, ...rest }) => rest);
 }

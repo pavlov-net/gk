@@ -36,7 +36,7 @@ describe("getNeighbors", () => {
       { from_entity: "B", to_entity: "C", type: "uses" },
     ]);
 
-    const neighbors = await getNeighbors(db, "A", config, { maxDepth: 2 });
+    const neighbors = await getNeighbors(db, "A", { maxDepth: 2 });
     expect(neighbors.get(1)!).toHaveLength(1);
     expect(neighbors.get(1)![0]!.name).toBe("B");
     expect(neighbors.get(2)!).toHaveLength(1);
@@ -55,7 +55,7 @@ describe("getNeighbors", () => {
       { from_entity: "B", to_entity: "C", type: "uses" },
     ]);
 
-    const neighbors = await getNeighbors(db, "A", config, { maxDepth: 1 });
+    const neighbors = await getNeighbors(db, "A", { maxDepth: 1 });
     expect(neighbors.get(1)!).toHaveLength(1);
     expect(neighbors.has(2)).toBe(false);
   });
@@ -73,13 +73,13 @@ describe("getNeighbors", () => {
       { from_entity: "C", to_entity: "A", type: "uses" },
     ]);
 
-    const neighbors = await getNeighbors(db, "A", config, { maxDepth: 5 });
+    const neighbors = await getNeighbors(db, "A", { maxDepth: 5 });
     // Bidirectional: B (via A→B) and C (via C→A) are both depth-1 neighbors
     expect(neighbors.get(1)!).toHaveLength(2);
     expect(neighbors.has(2)).toBe(false);
   });
 
-  test("bumps strength on traversed edges", async () => {
+  test("getNeighbors is read-only — does not bump temporal fields", async () => {
     db = await createTestDb();
     await addEntities(db, [
       { name: "A", type: "component" },
@@ -89,13 +89,13 @@ describe("getNeighbors", () => {
       { from_entity: "A", to_entity: "B", type: "uses" },
     ]);
 
-    await getNeighbors(db, "A", config, { maxDepth: 1 });
+    await getNeighbors(db, "A", { maxDepth: 1 });
 
-    const row = await db.get<{ strength: number; access_count: number }>(
-      "SELECT strength, access_count FROM relationships WHERE type = 'uses'",
+    const row = await db.get<{ strength: number; stability: number }>(
+      "SELECT strength, stability FROM relationships WHERE type = 'uses'",
     );
-    expect(row!.strength).toBeCloseTo(1.1);
-    expect(row!.access_count).toBe(1);
+    expect(row!.strength).toBe(1.0);
+    expect(row!.stability).toBe(1.0);
   });
 
   test("filters by relationship types", async () => {
@@ -110,7 +110,7 @@ describe("getNeighbors", () => {
       { from_entity: "Auth", to_entity: "Logger", type: "logs_to" },
     ]);
 
-    const neighbors = await getNeighbors(db, "Auth", config, {
+    const neighbors = await getNeighbors(db, "Auth", {
       maxDepth: 1,
       relationshipTypes: ["depends_on"],
     });
@@ -120,7 +120,7 @@ describe("getNeighbors", () => {
 
   test("returns empty for missing entity", async () => {
     db = await createTestDb();
-    const neighbors = await getNeighbors(db, "Nope", config);
+    const neighbors = await getNeighbors(db, "Nope");
     expect(neighbors.size).toBe(0);
   });
 });
@@ -284,10 +284,14 @@ describe("getTimeline", () => {
   test("returns observations ordered by created_at", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
-    await addObservations(db, [
-      { content: "First observation", entity_names: ["Auth"] },
-      { content: "Second observation", entity_names: ["Auth"] },
-    ]);
+    await addObservations(
+      db,
+      [
+        { content: "First observation", entity_names: ["Auth"] },
+        { content: "Second observation", entity_names: ["Auth"] },
+      ],
+      config,
+    );
 
     const timeline = await getTimeline(db);
     expect(timeline).toHaveLength(2);
@@ -300,10 +304,14 @@ describe("getTimeline", () => {
       { name: "Auth", type: "component" },
       { name: "DB", type: "component" },
     ]);
-    await addObservations(db, [
-      { content: "Auth observation", entity_names: ["Auth"] },
-      { content: "DB observation", entity_names: ["DB"] },
-    ]);
+    await addObservations(
+      db,
+      [
+        { content: "Auth observation", entity_names: ["Auth"] },
+        { content: "DB observation", entity_names: ["DB"] },
+      ],
+      config,
+    );
 
     const timeline = await getTimeline(db, { entityName: "Auth" });
     expect(timeline).toHaveLength(1);
@@ -317,11 +325,15 @@ describe("getTimeline", () => {
       { name: "DB", type: "component" },
       { name: "Logger", type: "component" },
     ]);
-    await addObservations(db, [
-      { content: "Auth observation", entity_names: ["Auth"] },
-      { content: "DB observation", entity_names: ["DB"] },
-      { content: "Logger observation", entity_names: ["Logger"] },
-    ]);
+    await addObservations(
+      db,
+      [
+        { content: "Auth observation", entity_names: ["Auth"] },
+        { content: "DB observation", entity_names: ["DB"] },
+        { content: "Logger observation", entity_names: ["Logger"] },
+      ],
+      config,
+    );
 
     const timeline = await getTimeline(db, {
       entityNames: ["Auth", "DB"],
@@ -336,11 +348,15 @@ describe("getTimeline", () => {
       { name: "UseJWT", type: "decision" },
       { name: "Bug123", type: "issue" },
     ]);
-    await addObservations(db, [
-      { content: "Auth obs", entity_names: ["Auth"] },
-      { content: "JWT decision", entity_names: ["UseJWT"] },
-      { content: "Bug report", entity_names: ["Bug123"] },
-    ]);
+    await addObservations(
+      db,
+      [
+        { content: "Auth obs", entity_names: ["Auth"] },
+        { content: "JWT decision", entity_names: ["UseJWT"] },
+        { content: "Bug report", entity_names: ["Bug123"] },
+      ],
+      config,
+    );
 
     const timeline = await getTimeline(db, {
       entityTypes: ["component", "decision"],
@@ -366,9 +382,11 @@ describe("getStats", () => {
     await addRelationships(db, [
       { from_entity: "Auth", to_entity: "DB", type: "depends_on" },
     ]);
-    await addObservations(db, [
-      { content: "Auth uses JWT", entity_names: ["Auth"] },
-    ]);
+    await addObservations(
+      db,
+      [{ content: "Auth uses JWT", entity_names: ["Auth"] }],
+      config,
+    );
 
     const stats = await getStats(db);
     expect(stats.entity_count).toBe(3);
@@ -381,7 +399,7 @@ describe("getStats", () => {
     expect(stats.avg_observations_per_entity).toBeCloseTo(1 / 3);
     expect(stats.entities_without_observations).toBe(2); // DB and UseJWT
     expect(stats.orphan_observations).toBe(0);
-    expect(stats.temporal_health.fragile).toBe(3); // all stability=1.0
+    expect(stats.temporal_health.fragile).toBe(2); // DB and UseJWT (Auth got bumped by addObservations)
   });
 
   test("getStats includes embedding coverage", async () => {
@@ -450,10 +468,14 @@ describe("validateGraph", () => {
     await addRelationships(db, [
       { from_entity: "A", to_entity: "B", type: "uses" },
     ]);
-    await addObservations(db, [
-      { content: "A does stuff", entity_names: ["A"] },
-      { content: "B does stuff", entity_names: ["B"] },
-    ]);
+    await addObservations(
+      db,
+      [
+        { content: "A does stuff", entity_names: ["A"] },
+        { content: "B does stuff", entity_names: ["B"] },
+      ],
+      config,
+    );
 
     const validation = await validateGraph(db);
     expect(validation.issues).toHaveLength(0);

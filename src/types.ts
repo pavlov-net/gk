@@ -19,7 +19,6 @@ export const EntityRow = z.object({
   confidence: z.number().default(0.8),
   staleness_tier: StalenessTier.default("detail"),
   stability: z.number().default(1.0),
-  access_count: z.number().int().default(0),
   last_accessed: z.string().nullable().default(null),
   created_at: z.string(),
   updated_at: z.string(),
@@ -43,7 +42,6 @@ export const ObservationRow = z.object({
   confidence: z.number().default(0.8),
   source: z.string().nullable().default(null),
   stability: z.number().default(1.0),
-  access_count: z.number().int().default(0),
   last_accessed: z.string().nullable().default(null),
   created_at: z.string(),
 });
@@ -68,7 +66,6 @@ export const RelationshipRow = z.object({
   strength: z.number().default(1.0),
   confidence: z.number().default(0.8),
   stability: z.number().default(1.0),
-  access_count: z.number().int().default(0),
   last_accessed: z.string().nullable().default(null),
   created_at: z.string(),
 });

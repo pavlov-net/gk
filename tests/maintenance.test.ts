@@ -28,7 +28,7 @@ describe("pruneStale", () => {
     // Make "Stale" old by setting last_accessed to 100 days ago
     const oldDate = new Date(Date.now() - 100 * 86400000).toISOString();
     await db.run(
-      "UPDATE entities SET last_accessed = ?, access_count = 0, stability = 0.1 WHERE name = ?",
+      "UPDATE entities SET last_accessed = ?, stability = 0.1 WHERE name = ?",
       [oldDate, "Stale"],
     );
 
@@ -72,7 +72,7 @@ describe("getHealthReport", () => {
     const report = await getHealthReport(db);
     expect(report.entity_count_by_type.component).toBe(2);
     expect(report.entity_count_by_type.decision).toBe(1);
-    expect(report.most_accessed).toHaveLength(3);
+    expect(report.most_stable).toHaveLength(3);
     expect(report.temporal_health.fragile).toBe(3);
   });
 });

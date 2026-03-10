@@ -3,6 +3,7 @@ import type { Config } from "./config";
 import type { Embedder } from "./embeddings";
 import { resolveEntityIds } from "./graph";
 import { newId } from "./id";
+import { computeStabilityGrowth } from "./scoring";
 import type { ObservationInput, ObservationRow } from "./types";
 
 export interface ObservationResult {
@@ -13,6 +14,7 @@ export interface ObservationResult {
 export async function addObservations(
   backend: Backend,
   observations: ObservationInput[],
+  config: Config,
   embedder?: Embedder,
 ): Promise<ObservationResult[]> {
   if (observations.length === 0) return [];
@@ -51,6 +53,42 @@ export async function addObservations(
     await backend.syncObservationFts(results.map((r) => r.id));
   }
 
+  // Bump stability on linked entities (write = active knowledge maintenance)
+  const uniqueEntityIds = [...new Set(allNames)]
+    .map((n) => nameToId.get(n)!)
+    .filter(Boolean);
+  if (uniqueEntityIds.length > 0) {
+    const ph = uniqueEntityIds.map(() => "?").join(", ");
+    const entities = await backend.all<{
+      id: string;
+      stability: number;
+      last_accessed: string | null;
+    }>(
+      `SELECT id, stability, last_accessed FROM entities WHERE id IN (${ph})`,
+      uniqueEntityIds,
+    );
+
+    // Build batched CASE expression (each entity has different stability growth)
+    const ts = new Date().toISOString();
+    const caseParts: string[] = [];
+    const caseParams: (string | number)[] = [];
+    for (const entity of entities) {
+      caseParts.push("WHEN id = ? THEN ?");
+      caseParams.push(
+        entity.id,
+        computeStabilityGrowth(entity.stability, entity.last_accessed, config),
+      );
+    }
+
+    await backend.run(
+      `UPDATE entities SET
+        stability = CASE ${caseParts.join(" ")} END,
+        last_accessed = ?
+      WHERE id IN (${ph})`,
+      [...caseParams, ts, ...uniqueEntityIds],
+    );
+  }
+
   // Embed after transaction succeeds (non-fatal on failure)
   if (embedder && results.length > 0) {
     try {
@@ -70,27 +108,12 @@ export async function addObservations(
 export async function readObservation(
   backend: Backend,
   id: string,
-  config: Config,
 ): Promise<(ObservationRow & { entity_names: string[] }) | undefined> {
   const obs = await backend.get<ObservationRow>(
     "SELECT * FROM observations WHERE id = ?",
     [id],
   );
   if (!obs) return undefined;
-
-  // Bump temporal fields
-  const newStability = Math.min(
-    obs.stability * config.stability_growth,
-    config.max_stability,
-  );
-  await backend.run(
-    `UPDATE observations SET
-      access_count = access_count + 1,
-      stability = ?,
-      last_accessed = ?
-    WHERE id = ?`,
-    [newStability, new Date().toISOString(), id],
-  );
 
   // Get linked entity names
   const entities = await backend.all<{ name: string }>(
@@ -102,9 +125,6 @@ export async function readObservation(
 
   return {
     ...obs,
-    stability: newStability,
-    access_count: obs.access_count + 1,
-    last_accessed: new Date().toISOString(),
     entity_names: entities.map((e) => e.name),
   };
 }
@@ -113,6 +133,7 @@ export async function addChunkedObservation(
   backend: Backend,
   content: string,
   entityNames: string[],
+  config: Config,
   options?: {
     metadata?: Record<string, unknown>;
     confidence?: number;
@@ -138,7 +159,7 @@ export async function addChunkedObservation(
     source: options?.source,
   }));
 
-  return addObservations(backend, observations, embedder);
+  return addObservations(backend, observations, config, embedder);
 }
 
 export async function backfillEmbeddings(

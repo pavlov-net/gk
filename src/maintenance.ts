@@ -1,7 +1,8 @@
 import type { Backend } from "./backend";
 import type { Config } from "./config";
-import { computeScore } from "./scoring";
+import { computeRetention } from "./scoring";
 import type { StalenessTier } from "./types";
+import { TIER_WEIGHTS } from "./types";
 
 export interface StaleCandidate {
   id: string;
@@ -25,26 +26,21 @@ export async function pruneStale(
     name: string;
     type: string;
     stability: number;
-    access_count: number;
     last_accessed: string | null;
     staleness_tier: string;
   }>(
-    `SELECT id, name, type, stability, access_count, last_accessed, staleness_tier
+    `SELECT id, name, type, stability, last_accessed, staleness_tier
      FROM entities`,
   );
 
   const candidates: StaleCandidate[] = [];
   for (const e of entities) {
-    const score = computeScore(
-      {
-        fts_score: 1.0, // Neutral FTS score for pruning evaluation
-        stability: e.stability,
-        last_accessed: e.last_accessed,
-        access_count: e.access_count,
-        staleness_tier: e.staleness_tier as StalenessTier,
-      },
-      config,
-    );
+    // Evaluate purely on temporal vitality: retention * tierWeight
+    const retention = computeRetention(e.stability, e.last_accessed, config);
+    const tierWeight =
+      config.tier_weights[e.staleness_tier as StalenessTier] ??
+      TIER_WEIGHTS[e.staleness_tier as StalenessTier];
+    const score = retention * tierWeight;
 
     if (score < threshold) {
       candidates.push({
@@ -64,8 +60,8 @@ export async function pruneStale(
 export async function getHealthReport(backend: Backend): Promise<{
   entity_count_by_type: Record<string, number>;
   tier_distribution: Record<string, number>;
-  most_accessed: Array<{ name: string; access_count: number }>;
-  least_accessed: Array<{ name: string; access_count: number }>;
+  most_stable: Array<{ name: string; stability: number }>;
+  least_stable: Array<{ name: string; stability: number }>;
   avg_confidence: number;
   temporal_health: { durable: number; stable: number; fragile: number };
 }> {
@@ -82,20 +78,16 @@ export async function getHealthReport(backend: Backend): Promise<{
   const tierMap: Record<string, number> = {};
   for (const t of tiers) tierMap[t.tier] = t.count;
 
-  // Most/least accessed + aggregates in single queries
-  const mostAccessed = await backend.all<{
+  // Most/least stable + aggregates in single queries
+  const mostStable = await backend.all<{
     name: string;
-    access_count: number;
-  }>(
-    "SELECT name, access_count FROM entities ORDER BY access_count DESC LIMIT 10",
-  );
+    stability: number;
+  }>("SELECT name, stability FROM entities ORDER BY stability DESC LIMIT 10");
 
-  const leastAccessed = await backend.all<{
+  const leastStable = await backend.all<{
     name: string;
-    access_count: number;
-  }>(
-    "SELECT name, access_count FROM entities ORDER BY access_count ASC LIMIT 10",
-  );
+    stability: number;
+  }>("SELECT name, stability FROM entities ORDER BY stability ASC LIMIT 10");
 
   const [agg] = await backend.all<{
     avg_confidence: number;
@@ -114,8 +106,8 @@ export async function getHealthReport(backend: Backend): Promise<{
   return {
     entity_count_by_type: typeMap,
     tier_distribution: tierMap,
-    most_accessed: mostAccessed,
-    least_accessed: leastAccessed,
+    most_stable: mostStable,
+    least_stable: leastStable,
     avg_confidence: agg?.avg_confidence ?? 0,
     temporal_health: {
       durable: agg?.durable ?? 0,

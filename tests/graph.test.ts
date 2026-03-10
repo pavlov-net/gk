@@ -76,29 +76,33 @@ describe("Entity CRUD", () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
 
-    const entity = await getEntity(db, "Auth", config);
+    const entity = await getEntity(db, "Auth");
     expect(entity).toBeDefined();
     expect(entity!.name).toBe("Auth");
     expect(entity!.relationships).toEqual([]);
     expect(entity!.observations).toEqual([]);
   });
 
-  test("getEntity bumps access_count and stability", async () => {
+  test("getEntity is read-only — does not bump temporal fields", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
 
-    const first = await getEntity(db, "Auth", config);
-    expect(first!.access_count).toBe(1);
-    expect(first!.stability).toBeCloseTo(1.2);
+    await getEntity(db, "Auth");
+    await getEntity(db, "Auth");
 
-    const second = await getEntity(db, "Auth", config);
-    expect(second!.access_count).toBe(2);
-    expect(second!.stability).toBeCloseTo(1.44);
+    const row = await db.get<{
+      stability: number;
+      last_accessed: string | null;
+    }>("SELECT stability, last_accessed FROM entities WHERE name = ?", [
+      "Auth",
+    ]);
+    expect(row!.stability).toBe(1.0);
+    expect(row!.last_accessed).toBeNull();
   });
 
   test("getEntity returns undefined for missing entity", async () => {
     db = await createTestDb();
-    const entity = await getEntity(db, "Nope", config);
+    const entity = await getEntity(db, "Nope");
     expect(entity).toBeUndefined();
   });
 
@@ -106,7 +110,7 @@ describe("Entity CRUD", () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
 
-    const count = await updateEntities(db, [
+    const count = await updateEntities(db, config, [
       { name: "Auth", confidence: 0.95, staleness_tier: "overview" },
     ]);
     expect(count).toBeGreaterThanOrEqual(1);
@@ -133,9 +137,11 @@ describe("Entity CRUD", () => {
   test("deleteEntities with deleteOrphanObservations cleans up orphans", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
-    await addObservations(db, [
-      { content: "Auth handles JWT", entity_names: ["Auth"] },
-    ]);
+    await addObservations(
+      db,
+      [{ content: "Auth handles JWT", entity_names: ["Auth"] }],
+      config,
+    );
 
     const result = await deleteEntities(db, ["Auth"], {
       deleteOrphanObservations: true,
@@ -225,7 +231,7 @@ describe("Relationship CRUD", () => {
       { from_entity: "Auth", to_entity: "DB", type: "depends_on" },
     ]);
 
-    const rels = await getRelationships(db, config, {
+    const rels = await getRelationships(db, {
       entity_name: "Auth",
     });
     expect(rels).toHaveLength(1);
@@ -233,7 +239,7 @@ describe("Relationship CRUD", () => {
     expect(rels[0]!.to_name).toBe("DB");
   });
 
-  test("getRelationships bumps strength on retrieval", async () => {
+  test("getRelationships is read-only — does not bump temporal fields", async () => {
     db = await createTestDb();
     await addEntities(db, [
       { name: "Auth", type: "component" },
@@ -243,13 +249,13 @@ describe("Relationship CRUD", () => {
       { from_entity: "Auth", to_entity: "DB", type: "depends_on" },
     ]);
 
-    await getRelationships(db, config, { entity_name: "Auth" });
+    await getRelationships(db, { entity_name: "Auth" });
 
-    const row = await db.get<{ strength: number; access_count: number }>(
-      "SELECT strength, access_count FROM relationships WHERE type = 'depends_on'",
+    const row = await db.get<{ strength: number; stability: number }>(
+      "SELECT strength, stability FROM relationships WHERE type = 'depends_on'",
     );
-    expect(row!.strength).toBeCloseTo(1.1);
-    expect(row!.access_count).toBe(1);
+    expect(row!.strength).toBe(1.0);
+    expect(row!.stability).toBe(1.0);
   });
 
   test("getRelationships filters by type", async () => {
@@ -264,7 +270,7 @@ describe("Relationship CRUD", () => {
       { from_entity: "Auth", to_entity: "Cache", type: "uses" },
     ]);
 
-    const rels = await getRelationships(db, config, { type: "uses" });
+    const rels = await getRelationships(db, { type: "uses" });
     expect(rels).toHaveLength(1);
     expect(rels[0]!.to_name).toBe("Cache");
   });
@@ -279,7 +285,7 @@ describe("Relationship CRUD", () => {
       { from_entity: "Auth", to_entity: "DB", type: "depends_on" },
     ]);
 
-    const count = await updateRelationships(db, [
+    const count = await updateRelationships(db, config, [
       { id: rel!.id, properties: { critical: true } },
     ]);
     expect(count).toBeGreaterThanOrEqual(1);
@@ -305,9 +311,11 @@ describe("Entity Merging", () => {
       { name: "AuthModule", type: "component" },
       { name: "Auth", type: "component" },
     ]);
-    await addObservations(db, [
-      { content: "Handles JWT", entity_names: ["AuthModule"] },
-    ]);
+    await addObservations(
+      db,
+      [{ content: "Handles JWT", entity_names: ["AuthModule"] }],
+      config,
+    );
 
     const result = await mergeEntities(db, ["AuthModule"], "Auth");
     expect(result.merged).toBe(true);
@@ -405,13 +413,17 @@ describe("Entity Merging", () => {
         properties: { category: "frontend" },
       },
     ]);
-    await addObservations(db, [
-      { content: "ReactJS is a UI library", entity_names: ["ReactJS"] },
-      {
-        content: "React.js supports server components",
-        entity_names: ["React.js"],
-      },
-    ]);
+    await addObservations(
+      db,
+      [
+        { content: "ReactJS is a UI library", entity_names: ["ReactJS"] },
+        {
+          content: "React.js supports server components",
+          entity_names: ["React.js"],
+        },
+      ],
+      config,
+    );
 
     const result = await mergeEntities(db, ["ReactJS", "React.js"], "React");
     expect(result.sourcesMerged).toBe(2);
@@ -469,11 +481,13 @@ describe("Entity Profiles", () => {
     await addRelationships(db, [
       { from_entity: "Auth", to_entity: "DB", type: "depends_on" },
     ]);
-    await addObservations(db, [
-      { content: "Auth handles JWT tokens", entity_names: ["Auth"] },
-    ]);
+    await addObservations(
+      db,
+      [{ content: "Auth handles JWT tokens", entity_names: ["Auth"] }],
+      config,
+    );
 
-    const profile = await getEntityProfile(db, "Auth", config);
+    const profile = await getEntityProfile(db, "Auth");
     expect(profile).toBeDefined();
     expect(profile!.name).toBe("Auth");
     expect(profile!.relationships).toHaveLength(1);
@@ -487,11 +501,13 @@ describe("Entity Profiles", () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
     const longContent = "A".repeat(500);
-    await addObservations(db, [
-      { content: longContent, entity_names: ["Auth"] },
-    ]);
+    await addObservations(
+      db,
+      [{ content: longContent, entity_names: ["Auth"] }],
+      config,
+    );
 
-    const profile = await getEntityProfile(db, "Auth", config, {
+    const profile = await getEntityProfile(db, "Auth", {
       maxObservationLength: 100,
     });
     expect(profile!.observations[0]!.content).toHaveLength(103); // 100 + "..."
@@ -500,7 +516,7 @@ describe("Entity Profiles", () => {
 
   test("getEntityProfile returns undefined for missing entity", async () => {
     db = await createTestDb();
-    const profile = await getEntityProfile(db, "Nope", config);
+    const profile = await getEntityProfile(db, "Nope");
     expect(profile).toBeUndefined();
   });
 });
