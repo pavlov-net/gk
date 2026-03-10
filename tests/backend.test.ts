@@ -102,6 +102,7 @@ describe("GraphDB", () => {
       "INSERT INTO observation_entities (observation_id, entity_id) VALUES (?, ?)",
       ["o1", "e1"],
     );
+    await db.syncObservationFts(["o1"]);
 
     const results = await db.searchObservations("authentication JWT");
     expect(results.length).toBeGreaterThanOrEqual(1);
@@ -136,6 +137,7 @@ describe("GraphDB", () => {
       "INSERT INTO observation_entities (observation_id, entity_id) VALUES (?, ?)",
       ["o2", "e2"],
     );
+    await db.syncObservationFts(["o1", "o2"]);
 
     const results = await db.searchObservations("JWT", {
       entityTypes: ["decision"],
@@ -155,6 +157,7 @@ describe("GraphDB", () => {
       "INSERT INTO entities (id, name, type, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
       ["e2", "Database Layer", "component", ts, ts],
     );
+    await db.syncEntityFts(["Authentication Module", "Database Layer"]);
 
     const results = await db.searchEntities("authentication");
     expect(results.length).toBeGreaterThanOrEqual(1);

@@ -1,6 +1,7 @@
 import type { Backend } from "./backend";
 import type { Config } from "./config";
 import type { Embedder } from "./embeddings";
+import { resolveEntityIds } from "./graph";
 import { newId } from "./id";
 import type { ObservationInput, ObservationRow } from "./types";
 
@@ -14,8 +15,13 @@ export async function addObservations(
   observations: ObservationInput[],
   embedder?: Embedder,
 ): Promise<ObservationResult[]> {
+  if (observations.length === 0) return [];
   const results: ObservationResult[] = [];
   const ts = new Date().toISOString();
+
+  // Batch-resolve all entity names upfront
+  const allNames = observations.flatMap((o) => o.entity_names);
+  const nameToId = await resolveEntityIds(backend, allNames);
 
   await backend.transaction(async () => {
     for (const input of observations) {
@@ -29,24 +35,21 @@ export async function addObservations(
         [id, input.content, metadata, confidence, input.source ?? null, ts],
       );
 
-      // Resolve entity names and create junction entries
       for (const entityName of input.entity_names) {
-        const entity = await backend.get<{ id: string }>(
-          "SELECT id FROM entities WHERE name = ?",
-          [entityName],
-        );
-        if (!entity) {
-          throw new Error(`Entity not found: ${entityName}`);
-        }
         await backend.run(
           "INSERT INTO observation_entities (observation_id, entity_id) VALUES (?, ?)",
-          [id, entity.id],
+          [id, nameToId.get(entityName)!],
         );
       }
 
       results.push({ id, entity_names: input.entity_names });
     }
   });
+
+  // Sync FTS index for new observations
+  if (results.length > 0) {
+    await backend.syncObservationFts(results.map((r) => r.id));
+  }
 
   // Embed after transaction succeeds (non-fatal on failure)
   if (embedder && results.length > 0) {

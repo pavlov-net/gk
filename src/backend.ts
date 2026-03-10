@@ -83,6 +83,18 @@ export interface Backend {
 
   /** Report how many observations have/lack embeddings. */
   getEmbeddingCoverage(): Promise<{ total: number; embedded: number }>;
+
+  /** Sync FTS index after entity insert/upsert. No-op on MySQL (native FULLTEXT). */
+  syncEntityFts(names: string[]): Promise<void>;
+
+  /** Remove FTS entries before entity deletion. No-op on MySQL. */
+  deleteEntityFts(names: string[]): Promise<void>;
+
+  /** Sync FTS index after observation insert. No-op on MySQL. */
+  syncObservationFts(ids: string[]): Promise<void>;
+
+  /** Remove FTS entries before observation deletion. No-op on MySQL. */
+  deleteObservationFts(ids: string[]): Promise<void>;
 }
 
 // ── Dialect type ──────────────────────────────────────────────
@@ -146,35 +158,14 @@ CREATE INDEX IF NOT EXISTS idx_observations_created ON observations(created_at);
 CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
 
 -- FTS5 virtual tables (external content — no data duplication)
+-- Synced manually via Backend.syncEntityFts / syncObservationFts methods
+-- (triggers avoided because bun:sqlite changes count includes trigger effects)
 CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
   content, content='observations', content_rowid='rowid'
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
   name, type, content='entities', content_rowid='rowid'
 );
-
--- Triggers to keep FTS in sync
-CREATE TRIGGER IF NOT EXISTS obs_fts_ins AFTER INSERT ON observations BEGIN
-  INSERT INTO observations_fts(rowid, content) VALUES (NEW.rowid, NEW.content);
-END;
-CREATE TRIGGER IF NOT EXISTS obs_fts_del AFTER DELETE ON observations BEGIN
-  INSERT INTO observations_fts(observations_fts, rowid, content) VALUES('delete', OLD.rowid, OLD.content);
-END;
-CREATE TRIGGER IF NOT EXISTS obs_fts_upd AFTER UPDATE OF content ON observations BEGIN
-  INSERT INTO observations_fts(observations_fts, rowid, content) VALUES('delete', OLD.rowid, OLD.content);
-  INSERT INTO observations_fts(rowid, content) VALUES (NEW.rowid, NEW.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS ent_fts_ins AFTER INSERT ON entities BEGIN
-  INSERT INTO entities_fts(rowid, name, type) VALUES (NEW.rowid, NEW.name, NEW.type);
-END;
-CREATE TRIGGER IF NOT EXISTS ent_fts_del AFTER DELETE ON entities BEGIN
-  INSERT INTO entities_fts(entities_fts, rowid, name, type) VALUES('delete', OLD.rowid, OLD.name, OLD.type);
-END;
-CREATE TRIGGER IF NOT EXISTS ent_fts_upd AFTER UPDATE OF name, type ON entities BEGIN
-  INSERT INTO entities_fts(entities_fts, rowid, name, type) VALUES('delete', OLD.rowid, OLD.name, OLD.type);
-  INSERT INTO entities_fts(rowid, name, type) VALUES (NEW.rowid, NEW.name, NEW.type);
-END;
 `;
 
 const MYSQL_SCHEMA = [
@@ -315,9 +306,11 @@ export class GraphDB implements Backend {
           `CREATE TABLE IF NOT EXISTS observation_vectors (
             observation_id VARCHAR(16) PRIMARY KEY,
             embedding VECTOR(${embeddingDimensions}),
-            VECTOR INDEX vec_idx (embedding),
             FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
           )`,
+        );
+        await this.mysql!.unsafe(
+          "CREATE VECTOR INDEX IF NOT EXISTS vec_idx ON observation_vectors(embedding)",
         );
       }
     }
@@ -573,7 +566,7 @@ export class GraphDB implements Backend {
     const vecStr = `[${Array.from(query).join(",")}]`;
     return this.all(
       `SELECT observation_id AS id,
-              VEC_DISTANCE(embedding, VEC_FromText(?)) AS distance
+              VEC_DISTANCE_EUCLIDEAN(embedding, VEC_FromText(?)) AS distance
        FROM observation_vectors
        ORDER BY distance
        LIMIT ?`,
@@ -588,5 +581,95 @@ export class GraphDB implements Backend {
        LEFT JOIN observation_vectors v ON v.observation_id = o.id`,
     );
     return { total: row?.total ?? 0, embedded: row?.embedded ?? 0 };
+  }
+
+  async syncEntityFts(names: string[]): Promise<void> {
+    if (!this.sqlite || names.length === 0) return;
+    const ph = names.map(() => "?").join(", ");
+    const rows = this.sqlite
+      .query(`SELECT rowid, name, type FROM entities WHERE name IN (${ph})`)
+      .all(...(names as SQLQueryBindings[])) as Array<{
+      rowid: number;
+      name: string;
+      type: string;
+    }>;
+
+    const del = this.sqlite.query(
+      "INSERT INTO entities_fts(entities_fts, rowid, name, type) VALUES('delete', ?, ?, ?)",
+    );
+    const ins = this.sqlite.query(
+      "INSERT INTO entities_fts(rowid, name, type) VALUES(?, ?, ?)",
+    );
+    for (const row of rows) {
+      try {
+        del.run(row.rowid, row.name, row.type);
+      } catch {}
+      ins.run(row.rowid, row.name, row.type);
+    }
+  }
+
+  async deleteEntityFts(names: string[]): Promise<void> {
+    if (!this.sqlite || names.length === 0) return;
+    const ph = names.map(() => "?").join(", ");
+    const rows = this.sqlite
+      .query(`SELECT rowid, name, type FROM entities WHERE name IN (${ph})`)
+      .all(...(names as SQLQueryBindings[])) as Array<{
+      rowid: number;
+      name: string;
+      type: string;
+    }>;
+
+    const del = this.sqlite.query(
+      "INSERT INTO entities_fts(entities_fts, rowid, name, type) VALUES('delete', ?, ?, ?)",
+    );
+    for (const row of rows) {
+      try {
+        del.run(row.rowid, row.name, row.type);
+      } catch {}
+    }
+  }
+
+  async syncObservationFts(ids: string[]): Promise<void> {
+    if (!this.sqlite || ids.length === 0) return;
+    const ph = ids.map(() => "?").join(", ");
+    const rows = this.sqlite
+      .query(`SELECT rowid, content FROM observations WHERE id IN (${ph})`)
+      .all(...(ids as SQLQueryBindings[])) as Array<{
+      rowid: number;
+      content: string;
+    }>;
+
+    const del = this.sqlite.query(
+      "INSERT INTO observations_fts(observations_fts, rowid, content) VALUES('delete', ?, ?)",
+    );
+    const ins = this.sqlite.query(
+      "INSERT INTO observations_fts(rowid, content) VALUES(?, ?)",
+    );
+    for (const row of rows) {
+      try {
+        del.run(row.rowid, row.content);
+      } catch {}
+      ins.run(row.rowid, row.content);
+    }
+  }
+
+  async deleteObservationFts(ids: string[]): Promise<void> {
+    if (!this.sqlite || ids.length === 0) return;
+    const ph = ids.map(() => "?").join(", ");
+    const rows = this.sqlite
+      .query(`SELECT rowid, content FROM observations WHERE id IN (${ph})`)
+      .all(...(ids as SQLQueryBindings[])) as Array<{
+      rowid: number;
+      content: string;
+    }>;
+
+    const del = this.sqlite.query(
+      "INSERT INTO observations_fts(observations_fts, rowid, content) VALUES('delete', ?, ?)",
+    );
+    for (const row of rows) {
+      try {
+        del.run(row.rowid, row.content);
+      } catch {}
+    }
   }
 }

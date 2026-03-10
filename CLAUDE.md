@@ -60,6 +60,11 @@ bun run typecheck            # TypeScript type checking
 
 **Modify schema:** Update both `SQLITE_SCHEMA` and `MYSQL_SCHEMA` in `src/backend.ts`. SQLite uses TEXT types; MySQL uses VARCHAR/TIMESTAMP/JSON with concrete types.
 
+## bun:sqlite Gotchas
+
+- **`stmt.run().changes` is unreliable.** In bun:sqlite, `changes` includes rows affected by CASCADE deletes and trigger-fired statements — not just the direct statement. This differs from standard `sqlite3_changes()` behavior. **Use `SELECT COUNT(*)` before DELETE** to get accurate counts.
+- **FTS is manually synced.** FTS5 content-sync tables (`content='tablename'`) do NOT use triggers. After inserting/updating/deleting entities or observations, call the corresponding `syncEntityFts()`/`syncObservationFts()`/`deleteEntityFts()`/`deleteObservationFts()` methods on the backend. Tests that insert via raw SQL must also call these sync methods.
+
 ## Embeddings
 
 - **Provider:** Ollama (`nomic-embed-text`, 768 dimensions)
