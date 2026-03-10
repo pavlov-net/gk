@@ -1,8 +1,9 @@
-import pkg from "../package.json";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import pkg from "../package.json";
 import type { Backend } from "./backend";
 import type { Config } from "./config";
+import type { Embedder } from "./embeddings";
 import {
   addEntities,
   addRelationships,
@@ -16,6 +17,7 @@ import {
   getRelationships,
   getStats,
   getTimeline,
+  listEntities,
   listEntityTypes,
   mergeEntities,
   updateEntities,
@@ -30,6 +32,7 @@ import {
 import {
   addChunkedObservation,
   addObservations,
+  backfillEmbeddings,
   readObservation,
 } from "./observations";
 import { searchHybrid, searchKeyword } from "./search";
@@ -39,11 +42,15 @@ function text(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
 }
 
-export function createServer(backend: Backend, config: Config): McpServer {
+export function createServer(
+  backend: Backend,
+  config: Config,
+  embedder?: Embedder,
+): McpServer {
   const server = new McpServer(
     { name: "gk", version: pkg.version },
     {
-      instructions: `gk is an agentic knowledge graph server. You have 26 tools in 4 tiers:
+      instructions: `gk is an agentic knowledge graph server. You have 27 tools in 4 tiers:
 
 **Tier 1 -- Build the graph (8 tools):**
 - add_entities, add_relationships, add_observations (batch creation)
@@ -52,10 +59,11 @@ export function createServer(backend: Backend, config: Config): McpServer {
 - delete_entities (remove with cascade)
 - merge_entities (combine duplicate entities into one)
 
-**Tier 2 -- Search (4 tools):**
+**Tier 2 -- Search (5 tools):**
 - search_keyword (exact terms, names -- BM25)
-- search_hybrid (combines keyword relevance with temporal scoring -- use when unsure)
+- search (combines keyword relevance with semantic similarity and temporal scoring -- use when unsure)
 - search_entities (find entities by name)
+- list_entities (query entities by type without FTS)
 - read_observation (full text by ID after finding via search)
 
 **Tier 3 -- Navigate & analyze the graph (10 tools):**
@@ -122,7 +130,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       inputSchema: { observations: z.array(ObservationInput) },
     },
     async ({ observations }) => {
-      return text(await addObservations(backend, observations));
+      return text(await addObservations(backend, observations, embedder));
     },
   );
 
@@ -145,12 +153,18 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     },
     async (args) => {
       return text(
-        await addChunkedObservation(backend, args.content, args.entity_names, {
-          metadata: args.metadata,
-          confidence: args.confidence,
-          source: args.source,
-          maxChunkSize: args.max_chunk_size,
-        }),
+        await addChunkedObservation(
+          backend,
+          args.content,
+          args.entity_names,
+          {
+            metadata: args.metadata,
+            confidence: args.confidence,
+            source: args.source,
+            maxChunkSize: args.max_chunk_size,
+          },
+          embedder,
+        ),
       );
     },
   );
@@ -289,10 +303,10 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
   );
 
   server.registerTool(
-    "search_hybrid",
+    "search",
     {
       description:
-        "Hybrid search combining FTS relevance with temporal scoring (retention, Hebbian strengthening, staleness tier). Default search tool.",
+        "Search observations using keyword matching, semantic similarity (when Ollama is available), and temporal scoring. The default and recommended search tool.",
       inputSchema: {
         query: z.string().describe("Search query"),
         entity_types: z
@@ -314,11 +328,17 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     },
     async (args) => {
       return text(
-        await searchHybrid(backend, args.query, config, {
-          entityTypes: args.entity_types,
-          metadataFilters: args.metadata_filters,
-          limit: args.limit,
-        }),
+        await searchHybrid(
+          backend,
+          args.query,
+          config,
+          {
+            entityTypes: args.entity_types,
+            metadataFilters: args.metadata_filters,
+            limit: args.limit,
+          },
+          embedder,
+        ),
       );
     },
   );
@@ -367,6 +387,38 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
         await backend.searchEntities(args.query, {
           types: args.types,
           limit: args.limit,
+        }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "list_entities",
+    {
+      description:
+        "List entities, optionally filtered by type. Use this instead of search_entities when you want all entities of a type rather than searching by name.",
+      inputSchema: {
+        types: z
+          .array(z.string())
+          .optional()
+          .describe("Filter by entity types"),
+        limit: z.coerce
+          .number()
+          .optional()
+          .describe("Max results (default 100)"),
+        offset: z.coerce
+          .number()
+          .optional()
+          .describe("Pagination offset (default 0)"),
+      },
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async (args) => {
+      return text(
+        await listEntities(backend, {
+          types: args.types,
+          limit: args.limit,
+          offset: args.offset,
         }),
       );
     },
@@ -698,6 +750,48 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       });
     },
   );
+
+  if (process.env.GK_ENABLE_BACKFILL) {
+    server.registerTool(
+      "backfill_embeddings",
+      {
+        description:
+          "Temporary migration tool -- embeds observations that don't have vectors yet. Run after upgrading to semantic search or changing embedding models.",
+        inputSchema: {
+          batch_size: z.coerce
+            .number()
+            .optional()
+            .describe("Observations per batch (default 100)"),
+          force: z
+            .boolean()
+            .optional()
+            .describe(
+              "Re-embed all observations, even those with existing vectors (default false)",
+            ),
+        },
+        annotations: { idempotentHint: true },
+      },
+      async (args) => {
+        if (!embedder) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "Backfill unavailable: no embedding provider configured",
+              },
+            ],
+            isError: true,
+          };
+        }
+        return text(
+          await backfillEmbeddings(backend, embedder, {
+            batchSize: args.batch_size,
+            force: args.force,
+          }),
+        );
+      },
+    );
+  }
 
   // ── Resources (guides) ─────────────────────────────────────────
 

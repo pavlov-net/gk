@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { GraphDB } from "../src/backend";
 import { loadConfig } from "../src/config";
 import {
   addEntities,
@@ -7,13 +8,13 @@ import {
   getEntity,
   getEntityProfile,
   getRelationships,
+  listEntities,
   listEntityTypes,
   mergeEntities,
   updateEntities,
   updateRelationships,
 } from "../src/graph";
 import { addObservations } from "../src/observations";
-import type { GraphDB } from "../src/backend";
 import { createTestDb } from "./helpers";
 
 const config = loadConfig();
@@ -525,5 +526,68 @@ describe("listEntityTypes", () => {
     expect(types[0]!.count).toBe(2);
     expect(types[1]!.type).toBe("decision");
     expect(types[1]!.count).toBe(1);
+  });
+});
+
+describe("listEntities", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("returns all entities when no type filter", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Auth", type: "component" },
+      { name: "UseJWT", type: "decision" },
+    ]);
+    const results = await listEntities(db);
+    expect(results).toHaveLength(2);
+  });
+
+  test("filters by type", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Auth", type: "component" },
+      { name: "DB", type: "component" },
+      { name: "UseJWT", type: "decision" },
+    ]);
+    const results = await listEntities(db, { types: ["component"] });
+    expect(results).toHaveLength(2);
+    expect(results.every((r) => r.type === "component")).toBe(true);
+  });
+
+  test("filters by multiple types", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "Auth", type: "component" },
+      { name: "UseJWT", type: "decision" },
+      { name: "SomePattern", type: "pattern" },
+    ]);
+    const results = await listEntities(db, {
+      types: ["component", "decision"],
+    });
+    expect(results).toHaveLength(2);
+  });
+
+  test("respects limit and offset", async () => {
+    db = await createTestDb();
+    await addEntities(db, [
+      { name: "A", type: "component" },
+      { name: "B", type: "component" },
+      { name: "C", type: "component" },
+    ]);
+    const page1 = await listEntities(db, { limit: 2 });
+    expect(page1).toHaveLength(2);
+    const page2 = await listEntities(db, { limit: 2, offset: 2 });
+    expect(page2).toHaveLength(1);
+  });
+
+  test("returns empty array when no entities match type", async () => {
+    db = await createTestDb();
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    const results = await listEntities(db, { types: ["decision"] });
+    expect(results).toHaveLength(0);
   });
 });

@@ -1,5 +1,7 @@
 import type { Backend } from "./backend";
 import type { Config } from "./config";
+import type { Embedder } from "./embeddings";
+import { resolveEntityIds } from "./graph";
 import { newId } from "./id";
 import type { ObservationInput, ObservationRow } from "./types";
 
@@ -11,9 +13,15 @@ export interface ObservationResult {
 export async function addObservations(
   backend: Backend,
   observations: ObservationInput[],
+  embedder?: Embedder,
 ): Promise<ObservationResult[]> {
+  if (observations.length === 0) return [];
   const results: ObservationResult[] = [];
   const ts = new Date().toISOString();
+
+  // Batch-resolve all entity names upfront
+  const allNames = observations.flatMap((o) => o.entity_names);
+  const nameToId = await resolveEntityIds(backend, allNames);
 
   await backend.transaction(async () => {
     for (const input of observations) {
@@ -27,24 +35,34 @@ export async function addObservations(
         [id, input.content, metadata, confidence, input.source ?? null, ts],
       );
 
-      // Resolve entity names and create junction entries
       for (const entityName of input.entity_names) {
-        const entity = await backend.get<{ id: string }>(
-          "SELECT id FROM entities WHERE name = ?",
-          [entityName],
-        );
-        if (!entity) {
-          throw new Error(`Entity not found: ${entityName}`);
-        }
         await backend.run(
           "INSERT INTO observation_entities (observation_id, entity_id) VALUES (?, ?)",
-          [id, entity.id],
+          [id, nameToId.get(entityName)!],
         );
       }
 
       results.push({ id, entity_names: input.entity_names });
     }
   });
+
+  // Sync FTS index for new observations
+  if (results.length > 0) {
+    await backend.syncObservationFts(results.map((r) => r.id));
+  }
+
+  // Embed after transaction succeeds (non-fatal on failure)
+  if (embedder && results.length > 0) {
+    try {
+      const texts = observations.map((o) => o.content);
+      const vectors = await embedder.embed(texts);
+      await backend.storeEmbeddings(
+        results.map((r, i) => ({ id: r.id, vector: vectors[i]! })),
+      );
+    } catch {
+      // Graceful degradation: observation saved, embedding skipped
+    }
+  }
 
   return results;
 }
@@ -101,6 +119,7 @@ export async function addChunkedObservation(
     source?: string;
     maxChunkSize?: number;
   },
+  embedder?: Embedder,
 ): Promise<ObservationResult[]> {
   const maxSize = options?.maxChunkSize ?? 2000;
   const chunks = splitIntoChunks(content, maxSize);
@@ -119,7 +138,71 @@ export async function addChunkedObservation(
     source: options?.source,
   }));
 
-  return addObservations(backend, observations);
+  return addObservations(backend, observations, embedder);
+}
+
+export async function backfillEmbeddings(
+  backend: Backend,
+  embedder: Embedder,
+  options?: { batchSize?: number; force?: boolean },
+): Promise<{
+  embedded: number;
+  skipped: number;
+  errors: number;
+  last_error?: string;
+}> {
+  const batchSize = options?.batchSize ?? 100;
+  let embedded = 0;
+  let errors = 0;
+  let lastError: string | undefined;
+
+  const baseQuery = options?.force
+    ? "SELECT id, content FROM observations ORDER BY created_at"
+    : `SELECT o.id, o.content FROM observations o
+       LEFT JOIN observation_vectors v ON v.observation_id = o.id
+       WHERE v.observation_id IS NULL
+       ORDER BY o.created_at`;
+
+  const coverage = await backend.getEmbeddingCoverage();
+  let skipped = options?.force ? 0 : coverage.embedded;
+
+  // Paginated fetch to avoid loading all observations into memory
+  for (let offset = 0; ; offset += batchSize) {
+    const batch = await backend.all<{ id: string; content: string }>(
+      `${baseQuery} LIMIT ? OFFSET ?`,
+      [batchSize, offset],
+    );
+    if (batch.length === 0) break;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const texts = batch.map((r) => r.content);
+        const vectors = await embedder.embed(texts);
+        await backend.storeEmbeddings(
+          batch.map((r, j) => ({ id: r.id, vector: vectors[j]! })),
+        );
+        embedded += batch.length;
+        break;
+      } catch (e) {
+        if (attempt === 1) {
+          errors += batch.length;
+          lastError = e instanceof Error ? e.message : String(e);
+        }
+      }
+    }
+  }
+
+  // Recalculate skipped for force mode (total - what we processed)
+  if (options?.force) {
+    skipped = coverage.total - embedded - errors;
+  }
+
+  return {
+    embedded,
+    skipped,
+    errors,
+    ...(lastError && { last_error: lastError }),
+  };
 }
 
 function splitIntoChunks(text: string, maxSize: number): string[] {

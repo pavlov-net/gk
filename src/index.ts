@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { type Backend, GraphDB } from "./backend";
 import { type Config, loadConfig } from "./config";
+import { OllamaEmbedder } from "./embeddings";
 import { createServer } from "./server";
 
 function createBackend(config: Config): Backend {
@@ -28,7 +29,7 @@ async function main() {
       mkdirSync(dir, { recursive: true });
     }
     const backend = createBackend(config);
-    await backend.initialize();
+    await backend.initialize(config.embedding_dimensions);
     await backend.close();
     console.log(`Initialized gk database at ${config.db_path}`);
     return;
@@ -36,8 +37,12 @@ async function main() {
 
   // Default: serve
   const backend = createBackend(config);
-  await backend.initialize();
-  const mcpServer = createServer(backend, config);
+  await backend.initialize(config.embedding_dimensions);
+  const embedder = new OllamaEmbedder(
+    config.ollama_url,
+    config.embedding_model,
+  );
+  const mcpServer = createServer(backend, config, embedder);
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);
 }

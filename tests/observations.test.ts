@@ -1,12 +1,14 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import type { GraphDB } from "../src/backend";
 import { loadConfig } from "../src/config";
+import type { Embedder } from "../src/embeddings";
 import { addEntities } from "../src/graph";
 import {
   addChunkedObservation,
   addObservations,
+  backfillEmbeddings,
   readObservation,
 } from "../src/observations";
-import type { GraphDB } from "../src/backend";
 import { createTestDb } from "./helpers";
 
 const config = loadConfig();
@@ -120,5 +122,130 @@ describe("Observation CRUD", () => {
     expect(meta.chunk_index).toBe(0);
     expect(meta.chunk_total).toBe(results.length);
     expect(meta.chunk_group).toBeDefined();
+  });
+});
+
+function mockEmbedder(): Embedder {
+  return {
+    embed: mock(async (texts: string[]) =>
+      texts.map(() => new Float32Array(768)),
+    ) as Embedder["embed"],
+    isAvailable: mock(async () => true) as Embedder["isAvailable"],
+  };
+}
+
+describe("addObservations with embedder", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("stores embeddings when embedder is provided", async () => {
+    db = await createTestDb();
+    const embedder = mockEmbedder();
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    await addObservations(
+      db,
+      [{ content: "JWT handles tokens", entity_names: ["Auth"] }],
+      embedder,
+    );
+
+    expect(embedder.embed).toHaveBeenCalledTimes(1);
+    const coverage = await db.getEmbeddingCoverage();
+    expect(coverage.embedded).toBe(1);
+  });
+
+  test("succeeds without embedder (no vectors stored)", async () => {
+    db = await createTestDb();
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    const results = await addObservations(db, [
+      { content: "JWT handles tokens", entity_names: ["Auth"] },
+    ]);
+
+    expect(results).toHaveLength(1);
+    const coverage = await db.getEmbeddingCoverage();
+    expect(coverage.embedded).toBe(0);
+  });
+
+  test("succeeds when embedder throws (graceful degradation)", async () => {
+    db = await createTestDb();
+    const embedder: Embedder = {
+      embed: async () => {
+        throw new Error("Ollama down");
+      },
+      isAvailable: async () => false,
+    };
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    const results = await addObservations(
+      db,
+      [{ content: "JWT handles tokens", entity_names: ["Auth"] }],
+      embedder,
+    );
+
+    expect(results).toHaveLength(1);
+    const coverage = await db.getEmbeddingCoverage();
+    expect(coverage.embedded).toBe(0);
+  });
+});
+
+describe("backfillEmbeddings", () => {
+  let db: GraphDB;
+
+  afterEach(async () => {
+    if (db) await db.close();
+  });
+
+  test("embeds observations that lack vectors", async () => {
+    db = await createTestDb();
+    const embedder = mockEmbedder();
+
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    await addObservations(db, [
+      { content: "JWT handles tokens", entity_names: ["Auth"] },
+      { content: "OAuth2 flow", entity_names: ["Auth"] },
+    ]);
+
+    const before = await db.getEmbeddingCoverage();
+    expect(before.embedded).toBe(0);
+
+    const result = await backfillEmbeddings(db, embedder);
+    expect(result.embedded).toBe(2);
+    expect(result.skipped).toBe(0);
+
+    const after = await db.getEmbeddingCoverage();
+    expect(after.embedded).toBe(2);
+  });
+
+  test("skips already-embedded observations", async () => {
+    db = await createTestDb();
+    const embedder = mockEmbedder();
+
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    await addObservations(
+      db,
+      [{ content: "JWT handles tokens", entity_names: ["Auth"] }],
+      embedder,
+    );
+
+    const result = await backfillEmbeddings(db, embedder);
+    expect(result.embedded).toBe(0);
+    expect(result.skipped).toBe(1);
+  });
+
+  test("force re-embeds everything", async () => {
+    db = await createTestDb();
+    const embedder = mockEmbedder();
+
+    await addEntities(db, [{ name: "Auth", type: "component" }]);
+    await addObservations(
+      db,
+      [{ content: "JWT handles tokens", entity_names: ["Auth"] }],
+      embedder,
+    );
+
+    const result = await backfillEmbeddings(db, embedder, { force: true });
+    expect(result.embedded).toBe(1);
+    expect(result.skipped).toBe(0);
   });
 });

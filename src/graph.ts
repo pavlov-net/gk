@@ -18,7 +18,7 @@ export async function addEntities(
   backend: Backend,
   entities: EntityInput[],
 ): Promise<EntityResult[]> {
-  const results: EntityResult[] = [];
+  if (entities.length === 0) return [];
   const ts = new Date().toISOString();
 
   await backend.transaction(async () => {
@@ -40,17 +40,26 @@ export async function addEntities(
            updated_at = excluded.updated_at`,
         [id, input.name, input.type, properties, confidence, tier, ts, ts],
       );
-
-      // Get the actual ID (may differ if upserted)
-      const row = await backend.get<{ id: string }>(
-        "SELECT id FROM entities WHERE name = ? AND type = ?",
-        [input.name, input.type],
-      );
-      results.push({ id: row!.id, name: input.name, type: input.type });
     }
   });
 
-  return results;
+  // Batch-fetch actual IDs (may differ from generated IDs on upsert)
+  const conditions = entities.map(() => "(name = ? AND type = ?)").join(" OR ");
+  const params = entities.flatMap((e) => [e.name, e.type]);
+  const rows = await backend.all<{ id: string; name: string; type: string }>(
+    `SELECT id, name, type FROM entities WHERE ${conditions}`,
+    params,
+  );
+  const idMap = new Map(rows.map((r) => [`${r.name}\0${r.type}`, r.id]));
+
+  // Sync FTS index for inserted/upserted entities
+  await backend.syncEntityFts(entities.map((e) => e.name));
+
+  return entities.map((input) => ({
+    id: idMap.get(`${input.name}\0${input.type}`)!,
+    name: input.name,
+    type: input.type,
+  }));
 }
 
 export async function getEntity(
@@ -192,31 +201,39 @@ export async function deleteEntities(
   names: string[],
   options?: { deleteOrphanObservations?: boolean },
 ): Promise<{ deleted: number; orphanObservationsDeleted: number }> {
+  if (names.length === 0) return { deleted: 0, orphanObservationsDeleted: 0 };
   let deleted = 0;
   let orphanObservationsDeleted = 0;
 
   await backend.transaction(async () => {
-    for (const name of names) {
-      const result = await backend.run("DELETE FROM entities WHERE name = ?", [
-        name,
-      ]);
-      if (result.changes > 0) deleted++;
-    }
+    const ph = names.map(() => "?").join(", ");
+
+    // Count before deleting (result.changes includes CASCADE effects in bun:sqlite)
+    const countRow = await backend.get<{ count: number }>(
+      `SELECT COUNT(*) as count FROM entities WHERE name IN (${ph})`,
+      names,
+    );
+    deleted = countRow?.count ?? 0;
+
+    // Clean up FTS before deleting entities
+    await backend.deleteEntityFts(names);
+
+    await backend.run(`DELETE FROM entities WHERE name IN (${ph})`, names);
 
     if (options?.deleteOrphanObservations) {
       const orphans = await backend.all<{ id: string }>(
-        `SELECT o.id FROM observations o
-         WHERE NOT EXISTS (
-           SELECT 1 FROM observation_entities oe WHERE oe.observation_id = o.id
-         )`,
+        `SELECT id FROM observations WHERE NOT EXISTS (
+          SELECT 1 FROM observation_entities oe WHERE oe.observation_id = observations.id
+        )`,
       );
+      orphanObservationsDeleted = orphans.length;
       if (orphans.length > 0) {
-        const placeholders = orphans.map(() => "?").join(", ");
+        await backend.deleteObservationFts(orphans.map((o) => o.id));
+        const orphanPh = orphans.map(() => "?").join(", ");
         await backend.run(
-          `DELETE FROM observations WHERE id IN (${placeholders})`,
+          `DELETE FROM observations WHERE id IN (${orphanPh})`,
           orphans.map((o) => o.id),
         );
-        orphanObservationsDeleted = orphans.length;
       }
     }
   });
@@ -233,29 +250,39 @@ export interface RelationshipResult {
   type: string;
 }
 
-async function resolveEntityId(
+export async function resolveEntityIds(
   backend: Backend,
-  name: string,
-): Promise<string> {
-  const row = await backend.get<{ id: string }>(
-    "SELECT id FROM entities WHERE name = ?",
-    [name],
+  names: string[],
+): Promise<Map<string, string>> {
+  if (names.length === 0) return new Map();
+  const unique = [...new Set(names)];
+  const ph = unique.map(() => "?").join(", ");
+  const rows = await backend.all<{ id: string; name: string }>(
+    `SELECT id, name FROM entities WHERE name IN (${ph})`,
+    unique,
   );
-  if (!row) throw new Error(`Entity not found: ${name}`);
-  return row.id;
+  const map = new Map(rows.map((r) => [r.name, r.id]));
+  for (const name of unique) {
+    if (!map.has(name)) throw new Error(`Entity not found: ${name}`);
+  }
+  return map;
 }
 
 export async function addRelationships(
   backend: Backend,
   relationships: RelationshipInput[],
 ): Promise<RelationshipResult[]> {
-  const results: RelationshipResult[] = [];
+  if (relationships.length === 0) return [];
   const ts = new Date().toISOString();
+
+  // Batch-resolve all entity names upfront
+  const allNames = relationships.flatMap((r) => [r.from_entity, r.to_entity]);
+  const nameToId = await resolveEntityIds(backend, allNames);
 
   await backend.transaction(async () => {
     for (const input of relationships) {
-      const fromId = await resolveEntityId(backend, input.from_entity);
-      const toId = await resolveEntityId(backend, input.to_entity);
+      const fromId = nameToId.get(input.from_entity)!;
+      const toId = nameToId.get(input.to_entity)!;
       const id = newId();
       const properties = input.properties
         ? JSON.stringify(input.properties)
@@ -270,22 +297,40 @@ export async function addRelationships(
            confidence = excluded.confidence`,
         [id, fromId, toId, input.type, properties, confidence, ts],
       );
-
-      // Get actual ID (may differ if upserted)
-      const row = await backend.get<{ id: string }>(
-        "SELECT id FROM relationships WHERE from_entity = ? AND to_entity = ? AND type = ?",
-        [fromId, toId, input.type],
-      );
-      results.push({
-        id: row!.id,
-        from_entity: input.from_entity,
-        to_entity: input.to_entity,
-        type: input.type,
-      });
     }
   });
 
-  return results;
+  // Batch-fetch actual IDs (may differ from generated IDs on upsert)
+  const conditions = relationships
+    .map(() => "(from_entity = ? AND to_entity = ? AND type = ?)")
+    .join(" OR ");
+  const params = relationships.flatMap((r) => [
+    nameToId.get(r.from_entity)!,
+    nameToId.get(r.to_entity)!,
+    r.type,
+  ]);
+  const rows = await backend.all<{
+    id: string;
+    from_entity: string;
+    to_entity: string;
+    type: string;
+  }>(
+    `SELECT id, from_entity, to_entity, type FROM relationships WHERE ${conditions}`,
+    params,
+  );
+  const relMap = new Map(
+    rows.map((r) => [`${r.from_entity}\0${r.to_entity}\0${r.type}`, r.id]),
+  );
+
+  return relationships.map((input) => {
+    const key = `${nameToId.get(input.from_entity)}\0${nameToId.get(input.to_entity)}\0${input.type}`;
+    return {
+      id: relMap.get(key)!,
+      from_entity: input.from_entity,
+      to_entity: input.to_entity,
+      type: input.type,
+    };
+  });
 }
 
 export async function getRelationships(
@@ -321,25 +366,20 @@ export async function getRelationships(
     params,
   );
 
-  // Bump temporal fields on returned relationships
+  // Batch-bump temporal fields on returned relationships
   if (rows.length > 0) {
     const ts = new Date().toISOString();
-    for (const row of rows) {
-      const newStrength = Math.min(row.strength + 0.1, 10.0);
-      const newStability = Math.min(
-        row.stability * config.stability_growth,
-        config.max_stability,
-      );
-      await backend.run(
-        `UPDATE relationships SET
-          strength = ?,
-          access_count = access_count + 1,
-          stability = ?,
-          last_accessed = ?
-        WHERE id = ?`,
-        [newStrength, newStability, ts, row.id],
-      );
-    }
+    const ids = rows.map((r) => r.id);
+    const ph = ids.map(() => "?").join(", ");
+    await backend.run(
+      `UPDATE relationships SET
+        strength = MIN(strength + 0.1, 10.0),
+        access_count = access_count + 1,
+        stability = MIN(stability * ?, ?),
+        last_accessed = ?
+      WHERE id IN (${ph})`,
+      [config.stability_growth, config.max_stability, ts, ...ids],
+    );
   }
 
   return rows;
@@ -402,19 +442,38 @@ export async function mergeEntities(
     [targetName],
   );
   if (!target) throw new Error(`Target entity not found: ${targetName}`);
+  if (sourceNames.length === 0)
+    return {
+      merged: true,
+      sourcesMerged: 0,
+      observationsMoved: 0,
+      relationshipsMoved: 0,
+    };
+
+  // Batch-fetch all source entities upfront
+  const sourcePh = sourceNames.map(() => "?").join(", ");
+  const sources = await backend.all<{
+    id: string;
+    name: string;
+    properties: string;
+  }>(
+    `SELECT id, name, properties FROM entities WHERE name IN (${sourcePh})`,
+    sourceNames,
+  );
+  if (sources.length === 0)
+    return {
+      merged: true,
+      sourcesMerged: 0,
+      observationsMoved: 0,
+      relationshipsMoved: 0,
+    };
 
   let sourcesMerged = 0;
   let observationsMoved = 0;
   let relationshipsMoved = 0;
 
   await backend.transaction(async () => {
-    for (const sourceName of sourceNames) {
-      const source = await backend.get<{ id: string; properties: string }>(
-        "SELECT id, properties FROM entities WHERE name = ?",
-        [sourceName],
-      );
-      if (!source) continue;
-
+    for (const source of sources) {
       // Merge properties (target wins on conflict)
       if (mergeProperties) {
         const sourceProps = JSON.parse(source.properties || "{}");
@@ -427,93 +486,102 @@ export async function mergeEntities(
         target.properties = JSON.stringify(merged);
       }
 
-      // Move observations: update junction table, ignore duplicates
-      const obsLinks = await backend.all<{ observation_id: string }>(
-        "SELECT observation_id FROM observation_entities WHERE entity_id = ?",
-        [source.id],
+      // Count non-duplicate obs links that will be moved
+      // (result.changes is unreliable with FTS triggers in bun:sqlite)
+      const obsCountRow = await backend.get<{ count: number }>(
+        `SELECT COUNT(*) as count FROM observation_entities
+         WHERE entity_id = ? AND observation_id NOT IN (
+           SELECT observation_id FROM observation_entities WHERE entity_id = ?
+         )`,
+        [source.id, target.id],
       );
-      for (const link of obsLinks) {
-        const existing = await backend.get(
-          "SELECT 1 FROM observation_entities WHERE observation_id = ? AND entity_id = ?",
-          [link.observation_id, target.id],
-        );
-        if (existing) {
-          await backend.run(
-            "DELETE FROM observation_entities WHERE observation_id = ? AND entity_id = ?",
-            [link.observation_id, source.id],
-          );
-        } else {
-          await backend.run(
-            "UPDATE observation_entities SET entity_id = ? WHERE observation_id = ? AND entity_id = ?",
-            [target.id, link.observation_id, source.id],
-          );
-          observationsMoved++;
-        }
-      }
 
-      // Move outgoing relationships
-      const outRels = await backend.all<{
-        id: string;
-        to_entity: string;
-        type: string;
-        strength: number;
-      }>(
-        "SELECT id, to_entity, type, strength FROM relationships WHERE from_entity = ?",
-        [source.id],
+      // Move observations: delete duplicate links, move the rest
+      await backend.run(
+        `DELETE FROM observation_entities
+         WHERE entity_id = ? AND observation_id IN (
+           SELECT observation_id FROM observation_entities WHERE entity_id = ?
+         )`,
+        [source.id, target.id],
       );
-      for (const rel of outRels) {
-        const dup = await backend.get<{ id: string; strength: number }>(
-          "SELECT id, strength FROM relationships WHERE from_entity = ? AND to_entity = ? AND type = ?",
-          [target.id, rel.to_entity, rel.type],
-        );
-        if (dup) {
-          const maxStrength = Math.max(dup.strength, rel.strength);
-          await backend.run(
-            "UPDATE relationships SET strength = ? WHERE id = ?",
-            [maxStrength, dup.id],
-          );
-          await backend.run("DELETE FROM relationships WHERE id = ?", [rel.id]);
-        } else {
-          await backend.run(
-            "UPDATE relationships SET from_entity = ? WHERE id = ?",
-            [target.id, rel.id],
-          );
-          relationshipsMoved++;
-        }
-      }
-
-      // Move incoming relationships
-      const inRels = await backend.all<{
-        id: string;
-        from_entity: string;
-        type: string;
-        strength: number;
-      }>(
-        "SELECT id, from_entity, type, strength FROM relationships WHERE to_entity = ?",
-        [source.id],
+      await backend.run(
+        "UPDATE observation_entities SET entity_id = ? WHERE entity_id = ?",
+        [target.id, source.id],
       );
-      for (const rel of inRels) {
-        const dup = await backend.get<{ id: string; strength: number }>(
-          "SELECT id, strength FROM relationships WHERE from_entity = ? AND to_entity = ? AND type = ?",
-          [rel.from_entity, target.id, rel.type],
-        );
-        if (dup) {
-          const maxStrength = Math.max(dup.strength, rel.strength);
-          await backend.run(
-            "UPDATE relationships SET strength = ? WHERE id = ?",
-            [maxStrength, dup.id],
-          );
-          await backend.run("DELETE FROM relationships WHERE id = ?", [rel.id]);
-        } else {
-          await backend.run(
-            "UPDATE relationships SET to_entity = ? WHERE id = ?",
-            [target.id, rel.id],
-          );
-          relationshipsMoved++;
-        }
-      }
+      observationsMoved += obsCountRow?.count ?? 0;
 
-      // Delete source entity
+      // Count non-duplicate outgoing rels that will be moved
+      const outCountRow = await backend.get<{ count: number }>(
+        `SELECT COUNT(*) as count FROM relationships
+         WHERE from_entity = ? AND NOT EXISTS (
+           SELECT 1 FROM relationships tr
+           WHERE tr.from_entity = ? AND tr.to_entity = relationships.to_entity AND tr.type = relationships.type
+         )`,
+        [source.id, target.id],
+      );
+
+      // Move outgoing relationships: update target strength for duplicates, delete source dups, move rest
+      await backend.run(
+        `UPDATE relationships SET strength = MAX(strength, (
+           SELECT sr.strength FROM relationships sr
+           WHERE sr.from_entity = ? AND sr.to_entity = relationships.to_entity AND sr.type = relationships.type
+         ))
+         WHERE from_entity = ? AND EXISTS (
+           SELECT 1 FROM relationships sr
+           WHERE sr.from_entity = ? AND sr.to_entity = relationships.to_entity AND sr.type = relationships.type
+         )`,
+        [source.id, target.id, source.id],
+      );
+      await backend.run(
+        `DELETE FROM relationships WHERE from_entity = ? AND EXISTS (
+           SELECT 1 FROM relationships tr
+           WHERE tr.from_entity = ? AND tr.to_entity = relationships.to_entity AND tr.type = relationships.type
+         )`,
+        [source.id, target.id],
+      );
+      await backend.run(
+        "UPDATE relationships SET from_entity = ? WHERE from_entity = ?",
+        [target.id, source.id],
+      );
+      relationshipsMoved += outCountRow?.count ?? 0;
+
+      // Count non-duplicate incoming rels that will be moved
+      const inCountRow = await backend.get<{ count: number }>(
+        `SELECT COUNT(*) as count FROM relationships
+         WHERE to_entity = ? AND NOT EXISTS (
+           SELECT 1 FROM relationships tr
+           WHERE tr.to_entity = ? AND tr.from_entity = relationships.from_entity AND tr.type = relationships.type
+         )`,
+        [source.id, target.id],
+      );
+
+      // Move incoming relationships: same pattern
+      await backend.run(
+        `UPDATE relationships SET strength = MAX(strength, (
+           SELECT sr.strength FROM relationships sr
+           WHERE sr.to_entity = ? AND sr.from_entity = relationships.from_entity AND sr.type = relationships.type
+         ))
+         WHERE to_entity = ? AND EXISTS (
+           SELECT 1 FROM relationships sr
+           WHERE sr.to_entity = ? AND sr.from_entity = relationships.from_entity AND sr.type = relationships.type
+         )`,
+        [source.id, target.id, source.id],
+      );
+      await backend.run(
+        `DELETE FROM relationships WHERE to_entity = ? AND EXISTS (
+           SELECT 1 FROM relationships tr
+           WHERE tr.to_entity = ? AND tr.from_entity = relationships.from_entity AND tr.type = relationships.type
+         )`,
+        [source.id, target.id],
+      );
+      await backend.run(
+        "UPDATE relationships SET to_entity = ? WHERE to_entity = ?",
+        [target.id, source.id],
+      );
+      relationshipsMoved += inCountRow?.count ?? 0;
+
+      // Delete source entity (FTS cleanup first)
+      await backend.deleteEntityFts([source.name]);
       await backend.run("DELETE FROM entities WHERE id = ?", [source.id]);
       sourcesMerged++;
     }
@@ -653,6 +721,46 @@ export async function getEntityProfile(
   };
 }
 
+export interface ListEntitiesOptions {
+  types?: string[];
+  limit?: number;
+  offset?: number;
+}
+
+export async function listEntities(
+  backend: Backend,
+  options?: ListEntitiesOptions,
+): Promise<
+  Array<{
+    id: string;
+    name: string;
+    type: string;
+    confidence: number;
+    staleness_tier: string;
+  }>
+> {
+  const limit = options?.limit ?? 100;
+  const offset = options?.offset ?? 0;
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (options?.types?.length) {
+    conditions.push(`type IN (${options.types.map(() => "?").join(", ")})`);
+    params.push(...options.types);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  params.push(limit, offset);
+
+  return backend.all(
+    `SELECT id, name, type, confidence, staleness_tier
+     FROM entities ${where}
+     ORDER BY name ASC
+     LIMIT ? OFFSET ?`,
+    params,
+  );
+}
+
 export async function listEntityTypes(
   backend: Backend,
 ): Promise<Array<{ type: string; count: number }>> {
@@ -685,65 +793,65 @@ export async function getNeighbors(
   const visited = new Set<string>([start.id]);
   let frontier = [start.id];
   const result = new Map<number, Array<{ name: string; type: string }>>();
+  const traversedRelIds: string[] = [];
 
   for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
+    const ph = frontier.map(() => "?").join(", ");
+    const relFilter = options?.relationshipTypes?.length
+      ? ` AND r.type IN (${options.relationshipTypes.map(() => "?").join(", ")})`
+      : "";
+    const relParams = options?.relationshipTypes ?? [];
+
+    // Batch fetch all neighbors for entire frontier
+    const neighbors = await backend.all<{
+      id: string;
+      name: string;
+      type: string;
+      rel_id: string;
+    }>(
+      `SELECT e.id, e.name, e.type, r.id as rel_id FROM relationships r
+       JOIN entities e ON e.id = r.to_entity
+       WHERE r.from_entity IN (${ph})${relFilter}
+       UNION
+       SELECT e.id, e.name, e.type, r.id as rel_id FROM relationships r
+       JOIN entities e ON e.id = r.from_entity
+       WHERE r.to_entity IN (${ph})${relFilter}`,
+      [...frontier, ...relParams, ...frontier, ...relParams],
+    );
+
     const nextFrontier: string[] = [];
     const depthEntities: Array<{ name: string; type: string }> = [];
 
-    for (const entityId of frontier) {
-      // Get neighbors via relationships (both directions)
-      const relFilter = options?.relationshipTypes?.length
-        ? ` AND r.type IN (${options.relationshipTypes.map(() => "?").join(", ")})`
-        : "";
-      const relParams = options?.relationshipTypes ?? [];
-      const neighbors = await backend.all<{
-        id: string;
-        name: string;
-        type: string;
-        rel_id: string;
-        rel_stability: number;
-      }>(
-        `SELECT e.id, e.name, e.type, r.id as rel_id, r.stability as rel_stability FROM relationships r
-         JOIN entities e ON e.id = r.to_entity
-         WHERE r.from_entity = ?${relFilter}
-         UNION
-         SELECT e.id, e.name, e.type, r.id as rel_id, r.stability as rel_stability FROM relationships r
-         JOIN entities e ON e.id = r.from_entity
-         WHERE r.to_entity = ?${relFilter}`,
-        [entityId, ...relParams, entityId, ...relParams],
-      );
-
-      for (const n of neighbors) {
-        if (!visited.has(n.id)) {
-          visited.add(n.id);
-          nextFrontier.push(n.id);
-          depthEntities.push({ name: n.name, type: n.type });
-
-          // Bump relationship strength on traversed edge
-          const newStability = Math.min(
-            n.rel_stability * config.stability_growth,
-            config.max_stability,
-          );
-          await backend.run(
-            `UPDATE relationships SET
-              strength = MIN(strength + 0.1, 10.0),
-              access_count = access_count + 1,
-              stability = ?,
-              last_accessed = ?
-            WHERE id = ?`,
-            [newStability, new Date().toISOString(), n.rel_id],
-          );
-
-          if (visited.size >= maxResults + 1) break;
-        }
+    for (const n of neighbors) {
+      if (!visited.has(n.id)) {
+        visited.add(n.id);
+        nextFrontier.push(n.id);
+        depthEntities.push({ name: n.name, type: n.type });
+        traversedRelIds.push(n.rel_id);
+        if (visited.size >= maxResults + 1) break;
       }
-      if (visited.size >= maxResults + 1) break;
     }
 
     if (depthEntities.length > 0) {
       result.set(depth, depthEntities);
     }
     frontier = nextFrontier;
+    if (visited.size >= maxResults + 1) break;
+  }
+
+  // Batch-bump all traversed relationship edges
+  if (traversedRelIds.length > 0) {
+    const ts = new Date().toISOString();
+    const relPh = traversedRelIds.map(() => "?").join(", ");
+    await backend.run(
+      `UPDATE relationships SET
+        strength = MIN(strength + 0.1, 10.0),
+        access_count = access_count + 1,
+        stability = MIN(stability * ?, ?),
+        last_accessed = ?
+      WHERE id IN (${relPh})`,
+      [config.stability_growth, config.max_stability, ts, ...traversedRelIds],
+    );
   }
 
   return result;
@@ -757,46 +865,67 @@ export async function findPaths(
 ): Promise<string[][]> {
   const maxDepth = options?.maxDepth ?? 5;
 
-  const from = await backend.get<{ id: string; name: string }>(
-    "SELECT id, name FROM entities WHERE name = ?",
-    [fromName],
+  // Batch-resolve both endpoints in one query
+  const endpoints = await backend.all<{ id: string; name: string }>(
+    "SELECT id, name FROM entities WHERE name IN (?, ?)",
+    [fromName, toName],
   );
-  const to = await backend.get<{ id: string; name: string }>(
-    "SELECT id, name FROM entities WHERE name = ?",
-    [toName],
-  );
+  const from = endpoints.find((e) => e.name === fromName);
+  const to = endpoints.find((e) => e.name === toName);
   if (!from || !to) return [];
 
-  // BFS to find shortest path
-  const queue: Array<{ id: string; path: string[] }> = [
+  // Level-by-level BFS with batched neighbor queries
+  let currentLevel: Array<{ id: string; path: string[] }> = [
     { id: from.id, path: [from.name] },
   ];
   const visited = new Set<string>([from.id]);
 
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    if (current.path.length > maxDepth) continue;
+  for (let depth = 1; depth <= maxDepth && currentLevel.length > 0; depth++) {
+    const frontierIds = currentLevel.map((n) => n.id);
+    const ph = frontierIds.map(() => "?").join(", ");
 
-    const neighbors = await backend.all<{ id: string; name: string }>(
-      `SELECT e.id, e.name FROM relationships r
+    // Batch fetch all neighbors for entire frontier
+    const neighbors = await backend.all<{
+      source_id: string;
+      id: string;
+      name: string;
+    }>(
+      `SELECT r.from_entity as source_id, e.id, e.name FROM relationships r
        JOIN entities e ON e.id = r.to_entity
-       WHERE r.from_entity = ?
-       UNION
-       SELECT e.id, e.name FROM relationships r
+       WHERE r.from_entity IN (${ph})
+       UNION ALL
+       SELECT r.to_entity as source_id, e.id, e.name FROM relationships r
        JOIN entities e ON e.id = r.from_entity
-       WHERE r.to_entity = ?`,
-      [current.id, current.id],
+       WHERE r.to_entity IN (${ph})`,
+      [...frontierIds, ...frontierIds],
     );
 
+    // Group neighbors by source for path tracking
+    const neighborsBySource = new Map<
+      string,
+      Array<{ id: string; name: string }>
+    >();
     for (const n of neighbors) {
-      if (n.id === to.id) {
-        return [[...current.path, n.name]];
-      }
-      if (!visited.has(n.id)) {
-        visited.add(n.id);
-        queue.push({ id: n.id, path: [...current.path, n.name] });
+      const list = neighborsBySource.get(n.source_id) ?? [];
+      list.push({ id: n.id, name: n.name });
+      neighborsBySource.set(n.source_id, list);
+    }
+
+    const nextLevel: Array<{ id: string; path: string[] }> = [];
+    for (const current of currentLevel) {
+      const nbrs = neighborsBySource.get(current.id) ?? [];
+      for (const n of nbrs) {
+        if (n.id === to.id) {
+          return [[...current.path, n.name]];
+        }
+        if (!visited.has(n.id)) {
+          visited.add(n.id);
+          nextLevel.push({ id: n.id, path: [...current.path, n.name] });
+        }
       }
     }
+
+    currentLevel = nextLevel;
   }
 
   return [];
@@ -812,35 +941,38 @@ export async function extractSubgraph(
   const maxDepth = options?.maxDepth ?? 2;
   const maxEntities = options?.maxEntities ?? 100;
 
-  // Resolve seed IDs
-  const seedIds: string[] = [];
-  for (const name of seedNames) {
-    const row = await backend.get<{ id: string }>(
-      "SELECT id FROM entities WHERE name = ?",
-      [name],
-    );
-    if (row) seedIds.push(row.id);
-  }
-  if (seedIds.length === 0) return { entities: [], relationships: [] };
+  // Batch-resolve seed IDs
+  if (seedNames.length === 0) return { entities: [], relationships: [] };
+  const seedPh = seedNames.map(() => "?").join(", ");
+  const seedRows = await backend.all<{ id: string }>(
+    `SELECT id FROM entities WHERE name IN (${seedPh})`,
+    seedNames,
+  );
+  if (seedRows.length === 0) return { entities: [], relationships: [] };
+  const seedIds = seedRows.map((r) => r.id);
 
-  // BFS to collect entity IDs
+  // BFS to collect entity IDs — batch per depth level
   const visited = new Set<string>(seedIds);
   let frontier = [...seedIds];
 
   for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
+    const ph = frontier.map(() => "?").join(", ");
+    const neighbors = await backend.all<{ id: string }>(
+      `SELECT DISTINCT e.id FROM relationships r
+       JOIN entities e ON e.id = r.to_entity
+       WHERE r.from_entity IN (${ph})
+       UNION
+       SELECT DISTINCT e.id FROM relationships r
+       JOIN entities e ON e.id = r.from_entity
+       WHERE r.to_entity IN (${ph})`,
+      [...frontier, ...frontier],
+    );
+
     const nextFrontier: string[] = [];
-    for (const entityId of frontier) {
-      const neighbors = await backend.all<{ id: string }>(
-        `SELECT DISTINCT e.id FROM relationships r
-         JOIN entities e ON (e.id = r.to_entity OR e.id = r.from_entity)
-         WHERE (r.from_entity = ? OR r.to_entity = ?) AND e.id != ?`,
-        [entityId, entityId, entityId],
-      );
-      for (const n of neighbors) {
-        if (!visited.has(n.id) && visited.size < maxEntities) {
-          visited.add(n.id);
-          nextFrontier.push(n.id);
-        }
+    for (const n of neighbors) {
+      if (!visited.has(n.id) && visited.size < maxEntities) {
+        visited.add(n.id);
+        nextFrontier.push(n.id);
       }
     }
     frontier = nextFrontier;
@@ -1038,6 +1170,7 @@ export async function getStats(backend: Backend): Promise<{
   orphan_observations: number;
   tier_distribution: Record<string, number>;
   temporal_health: { durable: number; stable: number; fragile: number };
+  embedding_coverage: { total: number; embedded: number };
 }> {
   // Single query: all counts, avg confidence, temporal health, and orphan counts
   const [counts] = await backend.all<{
@@ -1094,6 +1227,9 @@ export async function getStats(backend: Backend): Promise<{
     )`,
   );
 
+  // Embedding coverage
+  const embeddingCoverage = await backend.getEmbeddingCoverage();
+
   const entityCount = counts!.entity_count;
   const relCount = counts!.relationship_count;
 
@@ -1115,6 +1251,7 @@ export async function getStats(backend: Backend): Promise<{
       stable: counts!.stable,
       fragile: counts!.fragile,
     },
+    embedding_coverage: embeddingCoverage,
   };
 }
 

@@ -5,9 +5,15 @@
   "type": "module",
   "main": "./src/index.ts",
   "files": ["src/"],
+  "scripts": {
+    "check": "biome check src/ tests/",
+    "check:fix": "biome check --write src/ tests/",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.0",
     "nanoid": "^5.1.0",
+    "sqlite-vec": "^0.1.7-alpha.2",
     "zod": "^4.0.0"
   },
   "devDependencies": {

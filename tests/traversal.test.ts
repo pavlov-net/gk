@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { GraphDB } from "../src/backend";
 import { loadConfig } from "../src/config";
 import {
   addEntities,
@@ -12,7 +13,6 @@ import {
   validateGraph,
 } from "../src/graph";
 import { addObservations } from "../src/observations";
-import type { GraphDB } from "../src/backend";
 import { createTestDb } from "./helpers";
 
 const config = loadConfig();
@@ -382,6 +382,13 @@ describe("getStats", () => {
     expect(stats.entities_without_observations).toBe(2); // DB and UseJWT
     expect(stats.orphan_observations).toBe(0);
     expect(stats.temporal_health.fragile).toBe(3); // all stability=1.0
+  });
+
+  test("getStats includes embedding coverage", async () => {
+    db = await createTestDb();
+    const stats = await getStats(db);
+    expect(stats).toHaveProperty("embedding_coverage");
+    expect(stats.embedding_coverage).toEqual({ total: 0, embedded: 0 });
   });
 });
 

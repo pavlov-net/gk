@@ -6,12 +6,12 @@
 
 gk is an [MCP](https://modelcontextprotocol.io/) server that gives agents tools to build, search, and analyze knowledge graphs. The schema is fully dynamic — the agent decides what entity types, relationship types, and properties fit the domain. One database per project.
 
-**26 tools across four tiers:**
+**27 tools across four tiers:**
 
 | Tier | Tools | Purpose |
 |------|-------|---------|
 | Build (8) | `add_entities`, `add_relationships`, `add_observations`, `add_chunked_observation`, `update_entities`, `update_relationships`, `delete_entities`, `merge_entities` | Construct and maintain the graph |
-| Search (4) | `search_keyword`, `search_hybrid`, `search_entities`, `read_observation` | Find information via BM25 full-text search |
+| Search (5) | `search_keyword`, `search`, `search_entities`, `list_entities`, `read_observation` | Find information via BM25 + semantic search |
 | Navigate (10) | `get_entity`, `get_entity_profile`, `get_relationships`, `list_entity_types`, `find_paths`, `get_neighbors`, `extract_subgraph`, `get_centrality`, `get_timeline`, `validate_graph` | Traverse and analyze graph structure |
 | Maintain (4) | `get_stats`, `prune_stale`, `get_health_report`, `bulk_update_confidence` | Monitor and maintain graph quality |
 
@@ -23,6 +23,8 @@ gk is an [MCP](https://modelcontextprotocol.io/) server that gives agents tools 
 
 - **[Bun](https://bun.sh)** — Runtime, test runner, package manager
 - **SQLite** via `bun:sqlite` — Embedded database with FTS5 full-text search
+- **[sqlite-vec](https://github.com/asg017/sqlite-vec)** — Vector similarity search for semantic embeddings
+- **[Ollama](https://ollama.ai)** (optional) — Local embeddings via `nomic-embed-text` for semantic search
 - **[Dolt](https://www.dolthub.com/)** (optional) — MySQL-compatible database with git-like versioning, via `Bun.SQL`
 - **[MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk)** — Model Context Protocol server
 
@@ -73,6 +75,11 @@ Environment variables or `gk.yml`:
 | `GK_DOLT_USER` | `root` | Dolt user |
 | `GK_DOLT_PASSWORD` | *(empty)* | Dolt password |
 | `GK_DECAY_BASE_DAYS` | `7` | Temporal decay half-life |
+| `GK_EMBEDDING_MODEL` | `nomic-embed-text` | Ollama embedding model |
+| `GK_EMBEDDING_DIMENSIONS` | `768` | Embedding vector dimensions |
+| `GK_OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
+| `GK_KEYWORD_WEIGHT` | `0.6` | BM25 weight in hybrid search |
+| `GK_SEMANTIC_WEIGHT` | `0.4` | Semantic weight in hybrid search |
 
 ## Guides
 
@@ -86,7 +93,7 @@ Environment variables or `gk.yml`:
 ## Development
 
 ```bash
-bun test              # Run tests (96 pass, 7 Dolt tests skip without GK_DOLT_HOST)
+bun test              # Run tests (119 pass, 7 Dolt tests skip without GK_DOLT_HOST)
 bun run check         # Biome lint + format check
 ```
 

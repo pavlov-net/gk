@@ -24,6 +24,13 @@ export const Config = z.object({
     })
     .default({ overview: 1.0, summary: 0.7, detail: 0.4 }),
 
+  // Embeddings
+  embedding_model: z.string().default("nomic-embed-text"),
+  embedding_dimensions: z.number().int().positive().default(768),
+  ollama_url: z.string().default("http://localhost:11434"),
+  keyword_weight: z.number().min(0).max(1).default(0.6),
+  semantic_weight: z.number().min(0).max(1).default(0.4),
+
   // Server
   transport: z.enum(["stdio"]).default("stdio"),
 });
@@ -62,6 +69,15 @@ export function loadConfig(overrides?: Partial<Config>): Config {
     env.dolt_password = process.env.GK_DOLT_PASSWORD;
   if (process.env.GK_DECAY_BASE_DAYS)
     env.decay_base_days = Number(process.env.GK_DECAY_BASE_DAYS);
+  if (process.env.GK_EMBEDDING_MODEL)
+    env.embedding_model = process.env.GK_EMBEDDING_MODEL;
+  if (process.env.GK_EMBEDDING_DIMENSIONS)
+    env.embedding_dimensions = Number(process.env.GK_EMBEDDING_DIMENSIONS);
+  if (process.env.GK_OLLAMA_URL) env.ollama_url = process.env.GK_OLLAMA_URL;
+  if (process.env.GK_KEYWORD_WEIGHT)
+    env.keyword_weight = Number(process.env.GK_KEYWORD_WEIGHT);
+  if (process.env.GK_SEMANTIC_WEIGHT)
+    env.semantic_weight = Number(process.env.GK_SEMANTIC_WEIGHT);
 
   return Config.parse({ ...fileConfig, ...env, ...overrides });
 }

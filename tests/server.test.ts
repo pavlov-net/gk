@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { GraphDB } from "../src/backend";
 import { loadConfig } from "../src/config";
 import { createServer } from "../src/server";
-import type { GraphDB } from "../src/backend";
 import { createTestDb } from "./helpers";
 
 const config = loadConfig();
@@ -35,11 +35,11 @@ describe("MCP Server", () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
     expect(names).toContain("add_entities");
-    expect(names).toContain("search_hybrid");
+    expect(names).toContain("search");
     expect(names).toContain("get_entity");
     expect(names).toContain("validate_graph");
     expect(names).toContain("prune_stale");
-    expect(tools.length).toBeGreaterThanOrEqual(25);
+    expect(tools.length).toBeGreaterThanOrEqual(28);
   });
 
   test("lists resources", async () => {
