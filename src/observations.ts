@@ -145,10 +145,16 @@ export async function backfillEmbeddings(
   backend: Backend,
   embedder: Embedder,
   options?: { batchSize?: number; force?: boolean },
-): Promise<{ embedded: number; skipped: number; errors: number }> {
+): Promise<{
+  embedded: number;
+  skipped: number;
+  errors: number;
+  last_error?: string;
+}> {
   const batchSize = options?.batchSize ?? 100;
   let embedded = 0;
   let errors = 0;
+  let lastError: string | undefined;
 
   const baseQuery = options?.force
     ? "SELECT id, content FROM observations ORDER BY created_at"
@@ -168,15 +174,21 @@ export async function backfillEmbeddings(
     );
     if (batch.length === 0) break;
 
-    try {
-      const texts = batch.map((r) => r.content);
-      const vectors = await embedder.embed(texts);
-      await backend.storeEmbeddings(
-        batch.map((r, j) => ({ id: r.id, vector: vectors[j]! })),
-      );
-      embedded += batch.length;
-    } catch {
-      errors += batch.length;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const texts = batch.map((r) => r.content);
+        const vectors = await embedder.embed(texts);
+        await backend.storeEmbeddings(
+          batch.map((r, j) => ({ id: r.id, vector: vectors[j]! })),
+        );
+        embedded += batch.length;
+        break;
+      } catch (e) {
+        if (attempt === 1) {
+          errors += batch.length;
+          lastError = e instanceof Error ? e.message : String(e);
+        }
+      }
     }
   }
 
@@ -185,7 +197,12 @@ export async function backfillEmbeddings(
     skipped = coverage.total - embedded - errors;
   }
 
-  return { embedded, skipped, errors };
+  return {
+    embedded,
+    skipped,
+    errors,
+    ...(lastError && { last_error: lastError }),
+  };
 }
 
 function splitIntoChunks(text: string, maxSize: number): string[] {
