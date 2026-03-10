@@ -1,6 +1,7 @@
 import type { Backend } from "./backend";
 import type { Config } from "./config";
 import { newId } from "./id";
+import { computeStabilityGrowth } from "./scoring";
 import type {
   EntityInput,
   EntityRow,
@@ -65,7 +66,6 @@ export async function addEntities(
 export async function getEntity(
   backend: Backend,
   name: string,
-  config: Config,
 ): Promise<
   | (EntityRow & {
       relationships: Array<{
@@ -82,20 +82,6 @@ export async function getEntity(
     [name],
   );
   if (!entity) return undefined;
-
-  // Bump temporal fields
-  const newStability = Math.min(
-    entity.stability * config.stability_growth,
-    config.max_stability,
-  );
-  await backend.run(
-    `UPDATE entities SET
-      access_count = access_count + 1,
-      stability = ?,
-      last_accessed = ?
-    WHERE id = ?`,
-    [newStability, new Date().toISOString(), entity.id],
-  );
 
   // Get relationships
   const outgoing = await backend.all<{
@@ -142,9 +128,6 @@ export async function getEntity(
 
   return {
     ...entity,
-    stability: newStability,
-    access_count: entity.access_count + 1,
-    last_accessed: new Date().toISOString(),
     relationships,
     observations: obs.map((o) => o.content),
   };
@@ -152,6 +135,7 @@ export async function getEntity(
 
 export async function updateEntities(
   backend: Backend,
+  config: Config,
   updates: Array<{
     name: string;
     type?: string;
@@ -165,8 +149,26 @@ export async function updateEntities(
 
   await backend.transaction(async () => {
     for (const u of updates) {
-      const sets: string[] = ["updated_at = ?"];
-      const params: unknown[] = [ts];
+      // Fetch current entity for spacing-effect stability growth
+      const current = await backend.get<{
+        stability: number;
+        last_accessed: string | null;
+      }>("SELECT stability, last_accessed FROM entities WHERE name = ?", [
+        u.name,
+      ]);
+
+      const sets: string[] = ["updated_at = ?", "last_accessed = ?"];
+      const params: unknown[] = [ts, ts];
+
+      if (current) {
+        const newStability = computeStabilityGrowth(
+          current.stability,
+          current.last_accessed,
+          config,
+        );
+        sets.push("stability = ?");
+        params.push(newStability);
+      }
 
       if (u.properties !== undefined) {
         sets.push("properties = ?");
@@ -335,7 +337,6 @@ export async function addRelationships(
 
 export async function getRelationships(
   backend: Backend,
-  config: Config,
   options?: {
     entity_name?: string;
     type?: string;
@@ -366,27 +367,12 @@ export async function getRelationships(
     params,
   );
 
-  // Batch-bump temporal fields on returned relationships
-  if (rows.length > 0) {
-    const ts = new Date().toISOString();
-    const ids = rows.map((r) => r.id);
-    const ph = ids.map(() => "?").join(", ");
-    await backend.run(
-      `UPDATE relationships SET
-        strength = MIN(strength + 0.1, 10.0),
-        access_count = access_count + 1,
-        stability = MIN(stability * ?, ?),
-        last_accessed = ?
-      WHERE id IN (${ph})`,
-      [config.stability_growth, config.max_stability, ts, ...ids],
-    );
-  }
-
   return rows;
 }
 
 export async function updateRelationships(
   backend: Backend,
+  config: Config,
   updates: Array<{
     id: string;
     properties?: Record<string, unknown>;
@@ -394,11 +380,30 @@ export async function updateRelationships(
   }>,
 ): Promise<number> {
   let updated = 0;
+  const ts = new Date().toISOString();
 
   await backend.transaction(async () => {
     for (const u of updates) {
-      const sets: string[] = [];
-      const params: unknown[] = [];
+      // Fetch current for spacing-effect stability growth
+      const current = await backend.get<{
+        stability: number;
+        last_accessed: string | null;
+      }>("SELECT stability, last_accessed FROM relationships WHERE id = ?", [
+        u.id,
+      ]);
+
+      const sets: string[] = ["last_accessed = ?"];
+      const params: unknown[] = [ts];
+
+      if (current) {
+        const newStability = computeStabilityGrowth(
+          current.stability,
+          current.last_accessed,
+          config,
+        );
+        sets.push("stability = ?");
+        params.push(newStability);
+      }
 
       if (u.properties !== undefined) {
         sets.push("properties = ?");
@@ -408,8 +413,6 @@ export async function updateRelationships(
         sets.push("type = ?");
         params.push(u.type);
       }
-
-      if (sets.length === 0) continue;
 
       params.push(u.id);
       const result = await backend.run(
@@ -600,7 +603,6 @@ export interface EntityProfile {
   confidence: number;
   staleness_tier: string;
   stability: number;
-  access_count: number;
   last_accessed: string | null;
   created_at: string;
   updated_at: string;
@@ -620,7 +622,6 @@ export interface EntityProfile {
 export async function getEntityProfile(
   backend: Backend,
   name: string,
-  config: Config,
   options?: { maxObservationLength?: number },
 ): Promise<EntityProfile | undefined> {
   const entity = await backend.get<EntityRow>(
@@ -628,20 +629,6 @@ export async function getEntityProfile(
     [name],
   );
   if (!entity) return undefined;
-
-  // Bump temporal fields
-  const newStability = Math.min(
-    entity.stability * config.stability_growth,
-    config.max_stability,
-  );
-  await backend.run(
-    `UPDATE entities SET
-      access_count = access_count + 1,
-      stability = ?,
-      last_accessed = ?
-    WHERE id = ?`,
-    [newStability, new Date().toISOString(), entity.id],
-  );
 
   // Get relationships with strength
   const outgoing = await backend.all<{
@@ -704,9 +691,8 @@ export async function getEntityProfile(
     ),
     confidence: entity.confidence,
     staleness_tier: entity.staleness_tier,
-    stability: newStability,
-    access_count: entity.access_count + 1,
-    last_accessed: new Date().toISOString(),
+    stability: entity.stability,
+    last_accessed: entity.last_accessed,
     created_at: entity.created_at,
     updated_at: entity.updated_at,
     relationships,
@@ -774,7 +760,6 @@ export async function listEntityTypes(
 export async function getNeighbors(
   backend: Backend,
   name: string,
-  config: Config,
   options?: {
     maxDepth?: number;
     maxResults?: number;
@@ -793,7 +778,6 @@ export async function getNeighbors(
   const visited = new Set<string>([start.id]);
   let frontier = [start.id];
   const result = new Map<number, Array<{ name: string; type: string }>>();
-  const traversedRelIds: string[] = [];
 
   for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
     const ph = frontier.map(() => "?").join(", ");
@@ -807,13 +791,12 @@ export async function getNeighbors(
       id: string;
       name: string;
       type: string;
-      rel_id: string;
     }>(
-      `SELECT e.id, e.name, e.type, r.id as rel_id FROM relationships r
+      `SELECT e.id, e.name, e.type FROM relationships r
        JOIN entities e ON e.id = r.to_entity
        WHERE r.from_entity IN (${ph})${relFilter}
        UNION
-       SELECT e.id, e.name, e.type, r.id as rel_id FROM relationships r
+       SELECT e.id, e.name, e.type FROM relationships r
        JOIN entities e ON e.id = r.from_entity
        WHERE r.to_entity IN (${ph})${relFilter}`,
       [...frontier, ...relParams, ...frontier, ...relParams],
@@ -827,7 +810,6 @@ export async function getNeighbors(
         visited.add(n.id);
         nextFrontier.push(n.id);
         depthEntities.push({ name: n.name, type: n.type });
-        traversedRelIds.push(n.rel_id);
         if (visited.size >= maxResults + 1) break;
       }
     }
@@ -837,21 +819,6 @@ export async function getNeighbors(
     }
     frontier = nextFrontier;
     if (visited.size >= maxResults + 1) break;
-  }
-
-  // Batch-bump all traversed relationship edges
-  if (traversedRelIds.length > 0) {
-    const ts = new Date().toISOString();
-    const relPh = traversedRelIds.map(() => "?").join(", ");
-    await backend.run(
-      `UPDATE relationships SET
-        strength = MIN(strength + 0.1, 10.0),
-        access_count = access_count + 1,
-        stability = MIN(stability * ?, ?),
-        last_accessed = ?
-      WHERE id IN (${relPh})`,
-      [config.stability_growth, config.max_stability, ts, ...traversedRelIds],
-    );
   }
 
   return result;

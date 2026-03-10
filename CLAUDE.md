@@ -16,7 +16,7 @@ src/backend.ts    ← Backend interface + GraphDB (unified SQLite/MySQL impl, sq
 src/graph.ts      ← Entity/relationship CRUD, traversal, analysis (~1200 lines)
 src/observations.ts ← Observation CRUD, chunking, embedding backfill
 src/search.ts     ← Search orchestration (keyword, semantic, hybrid with temporal re-ranking)
-src/scoring.ts    ← Temporal scoring (Hebbian + Ebbinghaus)
+src/scoring.ts    ← Temporal scoring (FSRS power-law decay, spacing effect)
 src/embeddings.ts ← Embedder interface + OllamaEmbedder (nomic-embed-text, 768d)
 src/maintenance.ts ← prune_stale, get_health_report, bulk_update_confidence
 src/server.ts     ← MCP server (27 tools + 1 optional, 4 resources, 4 prompts)
@@ -48,7 +48,7 @@ bun run check               # Biome lint + format
 bun run typecheck            # TypeScript type checking
 ```
 
-- 119 SQLite tests run always
+- 124 SQLite tests run always
 - 7 Dolt tests skip unless `GK_DOLT_HOST` is set
 - Tests use in-memory SQLite (`:memory:`) via `createTestDb()` in `tests/helpers.ts`
 
@@ -64,6 +64,15 @@ bun run typecheck            # TypeScript type checking
 
 - **`stmt.run().changes` is unreliable.** In bun:sqlite, `changes` includes rows affected by CASCADE deletes and trigger-fired statements — not just the direct statement. This differs from standard `sqlite3_changes()` behavior. **Use `SELECT COUNT(*)` before DELETE** to get accurate counts.
 - **FTS is manually synced.** FTS5 content-sync tables (`content='tablename'`) do NOT use triggers. After inserting/updating/deleting entities or observations, call the corresponding `syncEntityFts()`/`syncObservationFts()`/`deleteEntityFts()`/`deleteObservationFts()` methods on the backend. Tests that insert via raw SQL must also call these sync methods.
+
+## Temporal Dynamics
+
+- **Write-only bumps:** Stability and `last_accessed` are only updated on writes (`addObservations`, `updateEntities`, `updateRelationships`). Reads (`getEntity`, `getEntityProfile`, `getRelationships`, `getNeighbors`, `readObservation`, `search`) are pure reads — no temporal side effects.
+- **Power-law forgetting (FSRS):** `R = (1 + t/(S*d))^(-0.5)` — more accurate than exponential for modeling memory decay.
+- **Spacing effect:** Stability grows MORE when an entity has decayed: `growth = base * (1 + factor * (1 - R))`. Writing to neglected entities strengthens them more.
+- **Multiplicative scoring:** `final = content * (floor + (1-floor) * retention * tierWeight)`. Zero content match always scores zero. Fully decayed knowledge retains `floor` (10%) of content score.
+- **No `access_count` column:** Removed. Stability already encodes cumulative access history (Wozniak's Two Component Model).
+- **Config:** `temporal_floor` (0.1), `spacing_factor` (0.5), `decay_base_days` (7), `max_stability` (10), `stability_growth` (1.2)
 
 ## Embeddings
 

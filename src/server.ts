@@ -88,7 +88,7 @@ export function createServer(
 Search to find relevant observations, read for full text, traverse for structure.
 Use validate_graph periodically to check quality. Use merge_entities to consolidate duplicates.
 All observations and entities support optional confidence (0-1) and source tracking.
-Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
+Temporal dynamics: stability grows on writes (FSRS spacing effect), decays over time (power-law forgetting).
 
 **Guides:** Read resources \`gk://guides/extraction\`, \`gk://guides/pyramid\`,
 \`gk://guides/query\`, \`gk://guides/review\` for workflow guidance.`,
@@ -130,7 +130,9 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       inputSchema: { observations: z.array(ObservationInput) },
     },
     async ({ observations }) => {
-      return text(await addObservations(backend, observations, embedder));
+      return text(
+        await addObservations(backend, observations, config, embedder),
+      );
     },
   );
 
@@ -157,6 +159,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
           backend,
           args.content,
           args.entity_names,
+          config,
           {
             metadata: args.metadata,
             confidence: args.confidence,
@@ -189,7 +192,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       },
     },
     async ({ updates }) => {
-      return text({ updated: await updateEntities(backend, updates) });
+      return text({ updated: await updateEntities(backend, config, updates) });
     },
   );
 
@@ -208,7 +211,9 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       },
     },
     async ({ updates }) => {
-      return text({ updated: await updateRelationships(backend, updates) });
+      return text({
+        updated: await updateRelationships(backend, config, updates),
+      });
     },
   );
 
@@ -347,14 +352,14 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     "read_observation",
     {
       description:
-        "Read a single observation by ID. Returns full content, metadata, linked entities. Also strengthens the observation (Hebbian).",
+        "Read a single observation by ID. Returns full content, metadata, and linked entities.",
       inputSchema: {
         id: z.string().describe("Observation ID"),
       },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ id }) => {
-      const obs = await readObservation(backend, id, config);
+      const obs = await readObservation(backend, id);
       if (!obs) {
         return {
           content: [{ type: "text" as const, text: "Observation not found" }],
@@ -430,14 +435,14 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     "get_entity",
     {
       description:
-        "Get a full entity profile by name. Includes relationships, observations, and temporal fields. Strengthens the entity on access.",
+        "Get a full entity profile by name. Includes relationships, observations, and temporal fields.",
       inputSchema: {
         name: z.string().describe("Entity name"),
       },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ name }) => {
-      const entity = await getEntity(backend, name, config);
+      const entity = await getEntity(backend, name);
       if (!entity) {
         return {
           content: [{ type: "text" as const, text: "Entity not found" }],
@@ -463,7 +468,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) => {
-      const profile = await getEntityProfile(backend, args.name, config, {
+      const profile = await getEntityProfile(backend, args.name, {
         maxObservationLength: args.max_observation_length,
       });
       if (!profile) {
@@ -480,7 +485,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     "get_relationships",
     {
       description:
-        "Query relationships, optionally filtered by entity name and/or type. Strengthens returned relationships on access.",
+        "Query relationships, optionally filtered by entity name and/or type.",
       inputSchema: {
         entity_name: z
           .string()
@@ -492,7 +497,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     },
     async (args) => {
       return text(
-        await getRelationships(backend, config, {
+        await getRelationships(backend, {
           entity_name: args.entity_name,
           type: args.type,
         }),
@@ -558,7 +563,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) => {
-      const neighbors = await getNeighbors(backend, args.name, config, {
+      const neighbors = await getNeighbors(backend, args.name, {
         maxDepth: args.max_depth,
         maxResults: args.max_results,
         relationshipTypes: args.relationship_types,
@@ -723,7 +728,7 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     "get_health_report",
     {
       description:
-        "Detailed health report: type/tier distribution, most/least accessed, temporal health breakdown.",
+        "Detailed health report: type/tier distribution, most/least stable entities, temporal health breakdown.",
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async () => {

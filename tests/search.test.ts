@@ -27,13 +27,20 @@ describe("searchKeyword", () => {
   test("returns FTS results without temporal adjustment", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
-    await addObservations(db, [
-      {
-        content: "JWT authentication handles token validation",
-        entity_names: ["Auth"],
-      },
-      { content: "Database connection pooling setup", entity_names: ["Auth"] },
-    ]);
+    await addObservations(
+      db,
+      [
+        {
+          content: "JWT authentication handles token validation",
+          entity_names: ["Auth"],
+        },
+        {
+          content: "Database connection pooling setup",
+          entity_names: ["Auth"],
+        },
+      ],
+      config,
+    );
 
     const results = await searchKeyword(db, "authentication JWT");
     expect(results.length).toBeGreaterThanOrEqual(1);
@@ -46,12 +53,16 @@ describe("searchKeyword", () => {
       { name: "Auth", type: "component" },
       { name: "DB", type: "component" },
     ]);
-    await addObservations(db, [
-      {
-        content: "Auth reads user credentials from database",
-        entity_names: ["Auth", "DB"],
-      },
-    ]);
+    await addObservations(
+      db,
+      [
+        {
+          content: "Auth reads user credentials from database",
+          entity_names: ["Auth", "DB"],
+        },
+      ],
+      config,
+    );
 
     const results = await searchKeyword(db, "credentials database");
     expect(results[0]!.entity_names).toContain("Auth");
@@ -61,18 +72,22 @@ describe("searchKeyword", () => {
   test("filters by metadata_filters", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Book", type: "document" }]);
-    await addObservations(db, [
-      {
-        content: "Chapter 3 discusses advanced patterns",
-        entity_names: ["Book"],
-        metadata: { chapter: "3" },
-      },
-      {
-        content: "Chapter 1 covers the basics of the system",
-        entity_names: ["Book"],
-        metadata: { chapter: "1" },
-      },
-    ]);
+    await addObservations(
+      db,
+      [
+        {
+          content: "Chapter 3 discusses advanced patterns",
+          entity_names: ["Book"],
+          metadata: { chapter: "3" },
+        },
+        {
+          content: "Chapter 1 covers the basics of the system",
+          entity_names: ["Book"],
+          metadata: { chapter: "1" },
+        },
+      ],
+      config,
+    );
 
     const results = await searchKeyword(db, "chapter", {
       metadataFilters: { chapter: "3" },
@@ -84,13 +99,17 @@ describe("searchKeyword", () => {
   test("metadata_filters with no match returns empty", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Book", type: "document" }]);
-    await addObservations(db, [
-      {
-        content: "Chapter 3 discusses advanced patterns",
-        entity_names: ["Book"],
-        metadata: { chapter: "3" },
-      },
-    ]);
+    await addObservations(
+      db,
+      [
+        {
+          content: "Chapter 3 discusses advanced patterns",
+          entity_names: ["Book"],
+          metadata: { chapter: "3" },
+        },
+      ],
+      config,
+    );
 
     const results = await searchKeyword(db, "chapter", {
       metadataFilters: { chapter: "99" },
@@ -104,16 +123,20 @@ describe("searchKeyword", () => {
       { name: "Auth", type: "component" },
       { name: "UseJWT", type: "decision" },
     ]);
-    await addObservations(db, [
-      {
-        content: "Auth uses JWT tokens for validation",
-        entity_names: ["Auth"],
-      },
-      {
-        content: "Decided to use JWT for authentication",
-        entity_names: ["UseJWT"],
-      },
-    ]);
+    await addObservations(
+      db,
+      [
+        {
+          content: "Auth uses JWT tokens for validation",
+          entity_names: ["Auth"],
+        },
+        {
+          content: "Decided to use JWT for authentication",
+          entity_names: ["UseJWT"],
+        },
+      ],
+      config,
+    );
 
     const results = await searchKeyword(db, "JWT", {
       entityTypes: ["decision"],
@@ -133,12 +156,16 @@ describe("searchHybrid", () => {
   test("re-ranks by temporal score", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
-    await addObservations(db, [
-      {
-        content: "Authentication module handles JWT tokens",
-        entity_names: ["Auth"],
-      },
-    ]);
+    await addObservations(
+      db,
+      [
+        {
+          content: "Authentication module handles JWT tokens",
+          entity_names: ["Auth"],
+        },
+      ],
+      config,
+    );
 
     const results = await searchHybrid(db, "authentication JWT", config);
     expect(results.length).toBeGreaterThanOrEqual(1);
@@ -151,20 +178,24 @@ describe("searchHybrid", () => {
       { name: "Arch", type: "component" },
       { name: "Impl", type: "component" },
     ]);
-    await updateEntities(db, [
+    await updateEntities(db, config, [
       { name: "Arch", staleness_tier: "overview" },
       { name: "Impl", staleness_tier: "detail" },
     ]);
-    await addObservations(db, [
-      {
-        content: "System uses microservices architecture pattern",
-        entity_names: ["Arch"],
-      },
-      {
-        content: "Implementation uses microservices framework setup",
-        entity_names: ["Impl"],
-      },
-    ]);
+    await addObservations(
+      db,
+      [
+        {
+          content: "System uses microservices architecture pattern",
+          entity_names: ["Arch"],
+        },
+        {
+          content: "Implementation uses microservices framework setup",
+          entity_names: ["Impl"],
+        },
+      ],
+      config,
+    );
 
     const results = await searchHybrid(db, "microservices", config);
     expect(results.length).toBe(2);
@@ -172,23 +203,30 @@ describe("searchHybrid", () => {
     expect(results[0]!.entity_names).toContain("Arch");
   });
 
-  test("bumps access_count on returned results", async () => {
+  test("search is read-only — does not bump temporal fields", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
-    const [obs] = await addObservations(db, [
-      {
-        content: "Authentication module handles JWT tokens",
-        entity_names: ["Auth"],
-      },
-    ]);
+    const [obs] = await addObservations(
+      db,
+      [
+        {
+          content: "Authentication module handles JWT tokens",
+          entity_names: ["Auth"],
+        },
+      ],
+      config,
+    );
 
     await searchHybrid(db, "authentication", config);
 
-    const row = await db.get<{ access_count: number }>(
-      "SELECT access_count FROM observations WHERE id = ?",
-      [obs!.id],
-    );
-    expect(row!.access_count).toBe(1);
+    const row = await db.get<{
+      stability: number;
+      last_accessed: string | null;
+    }>("SELECT stability, last_accessed FROM observations WHERE id = ?", [
+      obs!.id,
+    ]);
+    expect(row!.stability).toBe(1.0);
+    expect(row!.last_accessed).toBeNull();
   });
 });
 
@@ -250,12 +288,16 @@ describe("searchHybrid with semantic", () => {
   test("combines BM25 and semantic scores when embedder provided", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
-    await addObservations(db, [
-      {
-        content: "Authentication module handles JWT tokens",
-        entity_names: ["Auth"],
-      },
-    ]);
+    await addObservations(
+      db,
+      [
+        {
+          content: "Authentication module handles JWT tokens",
+          entity_names: ["Auth"],
+        },
+      ],
+      config,
+    );
 
     // Store a vector for the observation
     const obs = await db.get<{ id: string }>(
@@ -283,12 +325,16 @@ describe("searchHybrid with semantic", () => {
   test("falls back to BM25-only when no embedder", async () => {
     db = await createTestDb();
     await addEntities(db, [{ name: "Auth", type: "component" }]);
-    await addObservations(db, [
-      {
-        content: "Authentication module handles JWT tokens",
-        entity_names: ["Auth"],
-      },
-    ]);
+    await addObservations(
+      db,
+      [
+        {
+          content: "Authentication module handles JWT tokens",
+          entity_names: ["Auth"],
+        },
+      ],
+      config,
+    );
 
     const results = await searchHybrid(db, "authentication", config);
     expect(results.length).toBeGreaterThanOrEqual(1);

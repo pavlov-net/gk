@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS entities (
   confidence REAL DEFAULT 0.8,
   staleness_tier TEXT DEFAULT 'detail',
   stability REAL DEFAULT 1.0,
-  access_count INTEGER DEFAULT 0,
+
   last_accessed TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS observations (
   confidence REAL DEFAULT 0.8,
   source TEXT,
   stability REAL DEFAULT 1.0,
-  access_count INTEGER DEFAULT 0,
+
   last_accessed TEXT,
   created_at TEXT NOT NULL
 );
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS relationships (
   strength REAL DEFAULT 1.0,
   confidence REAL DEFAULT 0.8,
   stability REAL DEFAULT 1.0,
-  access_count INTEGER DEFAULT 0,
+
   last_accessed TEXT,
   created_at TEXT NOT NULL,
   UNIQUE(from_entity, to_entity, type)
@@ -177,7 +177,7 @@ const MYSQL_SCHEMA = [
     confidence FLOAT DEFAULT 0.8,
     staleness_tier VARCHAR(16) DEFAULT 'detail',
     stability FLOAT DEFAULT 1.0,
-    access_count INT DEFAULT 0,
+
     last_accessed TIMESTAMP NULL,
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
@@ -192,7 +192,7 @@ const MYSQL_SCHEMA = [
     confidence FLOAT DEFAULT 0.8,
     source VARCHAR(256),
     stability FLOAT DEFAULT 1.0,
-    access_count INT DEFAULT 0,
+
     last_accessed TIMESTAMP NULL,
     created_at TIMESTAMP NOT NULL,
     FULLTEXT KEY ft_obs_content (content),
@@ -215,7 +215,7 @@ const MYSQL_SCHEMA = [
     strength FLOAT DEFAULT 1.0,
     confidence FLOAT DEFAULT 0.8,
     stability FLOAT DEFAULT 1.0,
-    access_count INT DEFAULT 0,
+
     last_accessed TIMESTAMP NULL,
     created_at TIMESTAMP NOT NULL,
     UNIQUE KEY uq_rel (from_entity, to_entity, type),
@@ -297,6 +297,9 @@ export class GraphDB implements Backend {
           `CREATE VIRTUAL TABLE IF NOT EXISTS observation_vectors USING vec0(observation_id TEXT PRIMARY KEY, embedding float[${embeddingDimensions}] distance_metric=cosine)`,
         );
       }
+
+      // Auto-migrate: drop removed access_count column
+      this.migrateDropAccessCount();
     } else {
       for (const statement of MYSQL_SCHEMA) {
         await this.mysql!.unsafe(statement);
@@ -312,6 +315,19 @@ export class GraphDB implements Backend {
         await this.mysql!.unsafe(
           "CREATE VECTOR INDEX IF NOT EXISTS vec_idx ON observation_vectors(embedding)",
         );
+      }
+    }
+  }
+
+  private migrateDropAccessCount(): void {
+    if (!this.sqlite) return;
+    const tables = ["entities", "observations", "relationships"];
+    for (const table of tables) {
+      const cols = this.sqlite
+        .query(`PRAGMA table_info(${table})`)
+        .all() as Array<{ name: string }>;
+      if (cols.some((c) => c.name === "access_count")) {
+        this.sqlite.exec(`ALTER TABLE ${table} DROP COLUMN access_count`);
       }
     }
   }

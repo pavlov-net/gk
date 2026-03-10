@@ -30,6 +30,8 @@ export const Config = z.object({
   ollama_url: z.string().default("http://localhost:11434"),
   keyword_weight: z.number().min(0).max(1).default(0.6),
   semantic_weight: z.number().min(0).max(1).default(0.4),
+  temporal_floor: z.number().min(0).max(1).default(0.1),
+  spacing_factor: z.number().min(0).default(0.5),
 
   // Server
   transport: z.enum(["stdio"]).default("stdio"),
@@ -78,6 +80,10 @@ export function loadConfig(overrides?: Partial<Config>): Config {
     env.keyword_weight = Number(process.env.GK_KEYWORD_WEIGHT);
   if (process.env.GK_SEMANTIC_WEIGHT)
     env.semantic_weight = Number(process.env.GK_SEMANTIC_WEIGHT);
+  if (process.env.GK_TEMPORAL_FLOOR)
+    env.temporal_floor = Number(process.env.GK_TEMPORAL_FLOOR);
+  if (process.env.GK_SPACING_FACTOR)
+    env.spacing_factor = Number(process.env.GK_SPACING_FACTOR);
 
   return Config.parse({ ...fileConfig, ...env, ...overrides });
 }
