@@ -751,45 +751,47 @@ Temporal dynamics: Hebbian strengthening on access, Ebbinghaus decay over time.
     },
   );
 
-  server.registerTool(
-    "backfill_embeddings",
-    {
-      description:
-        "Temporary migration tool -- embeds observations that don't have vectors yet. Run after upgrading to semantic search or changing embedding models.",
-      inputSchema: {
-        batch_size: z.coerce
-          .number()
-          .optional()
-          .describe("Observations per batch (default 100)"),
-        force: z
-          .boolean()
-          .optional()
-          .describe(
-            "Re-embed all observations, even those with existing vectors (default false)",
-          ),
+  if (process.env.GK_ENABLE_BACKFILL) {
+    server.registerTool(
+      "backfill_embeddings",
+      {
+        description:
+          "Temporary migration tool -- embeds observations that don't have vectors yet. Run after upgrading to semantic search or changing embedding models.",
+        inputSchema: {
+          batch_size: z.coerce
+            .number()
+            .optional()
+            .describe("Observations per batch (default 100)"),
+          force: z
+            .boolean()
+            .optional()
+            .describe(
+              "Re-embed all observations, even those with existing vectors (default false)",
+            ),
+        },
+        annotations: { idempotentHint: true },
       },
-      annotations: { idempotentHint: true },
-    },
-    async (args) => {
-      if (!embedder) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "Backfill unavailable: no embedding provider configured",
-            },
-          ],
-          isError: true,
-        };
-      }
-      return text(
-        await backfillEmbeddings(backend, embedder, {
-          batchSize: args.batch_size,
-          force: args.force,
-        }),
-      );
-    },
-  );
+      async (args) => {
+        if (!embedder) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "Backfill unavailable: no embedding provider configured",
+              },
+            ],
+            isError: true,
+          };
+        }
+        return text(
+          await backfillEmbeddings(backend, embedder, {
+            batchSize: args.batch_size,
+            force: args.force,
+          }),
+        );
+      },
+    );
+  }
 
   // ── Resources (guides) ─────────────────────────────────────────
 
