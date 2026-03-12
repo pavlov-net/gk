@@ -1,6 +1,6 @@
 {
   "name": "gk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Knowledge graph MCP server with temporal dynamics",
   "type": "module",
   "main": "./src/index.ts",
