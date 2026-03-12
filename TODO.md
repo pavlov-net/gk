@@ -14,11 +14,9 @@
 
 ## Infrastructure & Operations
 - [ ] **Multi-database support** — Switch between projects/databases without restarting the server
-- [ ] **Incremental re-embedding** — When embedding model changes, re-embed all content in background batches
 - [ ] **Database migration tooling** — Schema versioning and migration scripts for upgrades
 - [ ] **Backup / export** — Export graph to JSON-LD, RDF, or portable format; import from same
-- [ ] **Connection pooling** — Multiple concurrent readers via WAL mode optimization
-- [ ] **Metrics & observability** — Track tool call counts, latency, embedding API costs
+- [ ] **Metrics & observability** — Track tool call counts, latency, search performance
 
 ## Visualization & Export
 - [ ] **Graph visualization export** — Graphviz DOT, Mermaid, or D3.js JSON for visual exploration

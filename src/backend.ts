@@ -25,6 +25,9 @@ export type Row = Record<string, unknown>;
 // ── Backend interface ─────────────────────────────────────────
 
 export interface Backend {
+  /** Which SQL dialect this backend speaks. */
+  readonly dialect: Dialect;
+
   /** Initialize connection and create schema if needed */
   initialize(embeddingDimensions?: number): Promise<void>;
 
@@ -238,11 +241,11 @@ function sanitizeFts5(query: string): string {
     .join(" ");
 }
 
-// ── Convert ? placeholders to $N for Bun.SQL ─────────────────
-
-function toPositionalParams(sql: string): string {
-  let i = 0;
-  return sql.replace(/\?/g, () => `$${++i}`);
+/** Build a tagged template call from a SQL string with ? placeholders. */
+function sqlQuery(db: SQL, sql: string, params: unknown[] = []) {
+  const parts = sql.split("?");
+  const strings = Object.assign(parts, { raw: parts });
+  return db(strings as TemplateStringsArray, ...params);
 }
 
 // ── Unified backend ──────────────────────────────────────────
@@ -256,9 +259,10 @@ export interface MysqlConfig {
 }
 
 export class GraphDB implements Backend {
-  private dialect: Dialect;
+  readonly dialect: Dialect;
   private sqlite?: Database;
   private mysql?: SQL;
+  private mysqlConfig?: MysqlConfig;
 
   private constructor(dialect: Dialect) {
     this.dialect = dialect;
@@ -272,7 +276,31 @@ export class GraphDB implements Backend {
 
   static forMysql(config: MysqlConfig): GraphDB {
     const db = new GraphDB("mysql");
-    db.mysql = new SQL({
+    db.mysqlConfig = config;
+    return db;
+  }
+
+  /** Connect to MySQL, creating the target database if it doesn't exist. */
+  private async connectMysql(): Promise<void> {
+    const config = this.mysqlConfig!;
+    // Bootstrap: connect to information_schema to create the target database
+    const bootstrap = new SQL({
+      adapter: "mysql",
+      hostname: config.host,
+      port: config.port,
+      database: "information_schema",
+      username: config.user,
+      password: config.password,
+    });
+    try {
+      await bootstrap.unsafe(
+        `CREATE DATABASE IF NOT EXISTS \`${config.database}\``,
+      );
+    } finally {
+      await bootstrap.end();
+    }
+    // Now connect to the target database
+    this.mysql = new SQL({
       adapter: "mysql",
       hostname: config.host,
       port: config.port,
@@ -280,7 +308,6 @@ export class GraphDB implements Backend {
       username: config.user,
       password: config.password,
     });
-    return db;
   }
 
   async initialize(embeddingDimensions?: number): Promise<void> {
@@ -301,6 +328,7 @@ export class GraphDB implements Backend {
       // Auto-migrate: drop removed access_count column
       this.migrateDropAccessCount();
     } else {
+      await this.connectMysql();
       for (const statement of MYSQL_SCHEMA) {
         await this.mysql!.unsafe(statement);
       }
@@ -308,7 +336,7 @@ export class GraphDB implements Backend {
         await this.mysql!.unsafe(
           `CREATE TABLE IF NOT EXISTS observation_vectors (
             observation_id VARCHAR(16) PRIMARY KEY,
-            embedding VECTOR(${embeddingDimensions}),
+            embedding VECTOR(${embeddingDimensions}) NOT NULL,
             FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
           )`,
         );
@@ -335,8 +363,8 @@ export class GraphDB implements Backend {
   async close(): Promise<void> {
     if (this.sqlite) {
       this.sqlite.close();
-    } else {
-      await this.mysql!.end();
+    } else if (this.mysql) {
+      await this.mysql.end();
     }
   }
 
@@ -348,10 +376,7 @@ export class GraphDB implements Backend {
         : stmt.run();
       return { changes: result.changes };
     }
-    const result = await this.mysql!.unsafe(
-      toPositionalParams(sql),
-      params as unknown[],
-    );
+    const result = await sqlQuery(this.mysql!, sql, params as unknown[]);
     return {
       changes:
         (result as unknown as { affectedRows?: number }).affectedRows ?? 0,
@@ -369,10 +394,7 @@ export class GraphDB implements Backend {
         : stmt.get();
       return (row as T | null) ?? undefined;
     }
-    const rows = await this.mysql!.unsafe(
-      toPositionalParams(sql),
-      params as unknown[],
-    );
+    const rows = await sqlQuery(this.mysql!, sql, params as unknown[]);
     return (rows[0] as T) ?? undefined;
   }
 
@@ -387,10 +409,7 @@ export class GraphDB implements Backend {
         : stmt.all();
       return rows as T[];
     }
-    const rows = await this.mysql!.unsafe(
-      toPositionalParams(sql),
-      params as unknown[],
-    );
+    const rows = await sqlQuery(this.mysql!, sql, params as unknown[]);
     return rows as T[];
   }
 
@@ -557,9 +576,10 @@ export class GraphDB implements Backend {
     } else {
       for (const { id, vector } of items) {
         const vecStr = `[${Array.from(vector).join(",")}]`;
-        await this.mysql!.unsafe(
-          "INSERT INTO observation_vectors (observation_id, embedding) VALUES ($1, VEC_FromText($2)) ON DUPLICATE KEY UPDATE embedding = VEC_FromText($2)",
-          [id, vecStr],
+        await sqlQuery(
+          this.mysql!,
+          "INSERT INTO observation_vectors (observation_id, embedding) VALUES (?, VEC_FromText(?)) ON DUPLICATE KEY UPDATE embedding = VEC_FromText(?)",
+          [id, vecStr, vecStr],
         );
       }
     }
