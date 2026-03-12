@@ -27,7 +27,7 @@ src/id.ts         ← nanoid wrapper
 src/prompts/*.md  ← Domain guide content (extraction, pyramid, query, review)
 ```
 
-All SQL in graph.ts/observations.ts/search.ts/maintenance.ts uses standard SQL with `?` placeholders through the `Backend` interface. Dialect-specific SQL (FTS, JSON functions, vector search) lives only in `backend.ts`.
+All SQL in graph.ts/observations.ts/search.ts/maintenance.ts uses standard SQL with `?` placeholders through the `Backend` interface. Dialect-specific SQL (FTS, JSON functions, vector search, upserts) lives only in `backend.ts`. Use `backend.upsert()` instead of writing dialect-specific ON CONFLICT/ON DUPLICATE KEY UPDATE SQL.
 
 ## Conventions
 

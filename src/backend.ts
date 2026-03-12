@@ -25,9 +25,6 @@ export type Row = Record<string, unknown>;
 // ── Backend interface ─────────────────────────────────────────
 
 export interface Backend {
-  /** Which SQL dialect this backend speaks. */
-  readonly dialect: Dialect;
-
   /** Initialize connection and create schema if needed */
   initialize(embeddingDimensions?: number): Promise<void>;
 
@@ -48,6 +45,18 @@ export interface Backend {
 
   /** Execute in a transaction. Rolls back on error. */
   transaction<T>(fn: () => Promise<T>): Promise<T>;
+
+  /**
+   * Dialect-aware INSERT ... ON CONFLICT/ON DUPLICATE KEY UPDATE.
+   * Generates the correct upsert SQL for the backend dialect.
+   */
+  upsert(opts: {
+    table: string;
+    columns: string[];
+    values: unknown[];
+    conflictKeys: string[];
+    updateColumns: string[];
+  }): Promise<{ changes: number }>;
 
   /**
    * Full-text search over observation content.
@@ -83,9 +92,6 @@ export interface Backend {
     query: Float32Array,
     limit: number,
   ): Promise<Array<{ id: string; distance: number }>>;
-
-  /** Report how many observations have/lack embeddings. */
-  getEmbeddingCoverage(): Promise<{ total: number; embedded: number }>;
 
   /** Sync FTS index after entity insert/upsert. No-op on MySQL (native FULLTEXT). */
   syncEntityFts(names: string[]): Promise<void>;
@@ -259,7 +265,7 @@ export interface MysqlConfig {
 }
 
 export class GraphDB implements Backend {
-  readonly dialect: Dialect;
+  private readonly dialect: Dialect;
   private sqlite?: Database;
   private mysql?: SQL;
   private mysqlConfig?: MysqlConfig;
@@ -427,6 +433,38 @@ export class GraphDB implements Backend {
     }
     // Bun.SQL threads the connection properly via sql.begin()
     return this.mysql!.begin(async () => fn());
+  }
+
+  async upsert(opts: {
+    table: string;
+    columns: string[];
+    values: unknown[];
+    conflictKeys: string[];
+    updateColumns: string[];
+  }): Promise<{ changes: number }> {
+    const { table, columns, values, conflictKeys, updateColumns } = opts;
+    const placeholders = columns.map(() => "?").join(", ");
+    const colList = columns.join(", ");
+
+    if (this.dialect === "sqlite") {
+      const setClause = updateColumns
+        .map((c) => `${c} = excluded.${c}`)
+        .join(", ");
+      return this.run(
+        `INSERT INTO ${table} (${colList}) VALUES (${placeholders})
+         ON CONFLICT(${conflictKeys.join(", ")}) DO UPDATE SET ${setClause}`,
+        values,
+      );
+    }
+
+    const setClause = updateColumns
+      .map((c) => `${c} = VALUES(${c})`)
+      .join(", ");
+    return this.run(
+      `INSERT INTO ${table} (${colList}) VALUES (${placeholders})
+       ON DUPLICATE KEY UPDATE ${setClause}`,
+      values,
+    );
   }
 
   async searchObservations(
@@ -608,15 +646,6 @@ export class GraphDB implements Backend {
        LIMIT ?`,
       [vecStr, limit],
     );
-  }
-
-  async getEmbeddingCoverage(): Promise<{ total: number; embedded: number }> {
-    const row = await this.get<{ total: number; embedded: number }>(
-      `SELECT COUNT(o.id) as total, COUNT(v.observation_id) as embedded
-       FROM observations o
-       LEFT JOIN observation_vectors v ON v.observation_id = o.id`,
-    );
-    return { total: row?.total ?? 0, embedded: row?.embedded ?? 0 };
   }
 
   async syncEntityFts(names: string[]): Promise<void> {

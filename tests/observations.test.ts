@@ -7,6 +7,7 @@ import {
   addChunkedObservation,
   addObservations,
   backfillEmbeddings,
+  getEmbeddingCoverage,
   readObservation,
 } from "../src/observations";
 import { createTestDb } from "./helpers";
@@ -197,7 +198,7 @@ describe("addObservations with embedder", () => {
     );
 
     expect(embedder.embed).toHaveBeenCalledTimes(1);
-    const coverage = await db.getEmbeddingCoverage();
+    const coverage = await getEmbeddingCoverage(db);
     expect(coverage.embedded).toBe(1);
   });
 
@@ -211,7 +212,7 @@ describe("addObservations with embedder", () => {
     );
 
     expect(results).toHaveLength(1);
-    const coverage = await db.getEmbeddingCoverage();
+    const coverage = await getEmbeddingCoverage(db);
     expect(coverage.embedded).toBe(0);
   });
 
@@ -232,7 +233,7 @@ describe("addObservations with embedder", () => {
     );
 
     expect(results).toHaveLength(1);
-    const coverage = await db.getEmbeddingCoverage();
+    const coverage = await getEmbeddingCoverage(db);
     expect(coverage.embedded).toBe(0);
   });
 });
@@ -258,14 +259,14 @@ describe("backfillEmbeddings", () => {
       config,
     );
 
-    const before = await db.getEmbeddingCoverage();
+    const before = await getEmbeddingCoverage(db);
     expect(before.embedded).toBe(0);
 
     const result = await backfillEmbeddings(db, embedder);
     expect(result.embedded).toBe(2);
     expect(result.skipped).toBe(0);
 
-    const after = await db.getEmbeddingCoverage();
+    const after = await getEmbeddingCoverage(db);
     expect(after.embedded).toBe(2);
   });
 

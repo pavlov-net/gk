@@ -184,7 +184,7 @@ export async function backfillEmbeddings(
        WHERE v.observation_id IS NULL
        ORDER BY o.created_at`;
 
-  const coverage = await backend.getEmbeddingCoverage();
+  const coverage = await getEmbeddingCoverage(backend);
   let skipped = options?.force ? 0 : coverage.embedded;
 
   // Paginated fetch to avoid loading all observations into memory
@@ -224,6 +224,17 @@ export async function backfillEmbeddings(
     errors,
     ...(lastError && { last_error: lastError }),
   };
+}
+
+export async function getEmbeddingCoverage(
+  backend: Backend,
+): Promise<{ total: number; embedded: number }> {
+  const row = await backend.get<{ total: number; embedded: number }>(
+    `SELECT COUNT(o.id) as total, COUNT(v.observation_id) as embedded
+     FROM observations o
+     LEFT JOIN observation_vectors v ON v.observation_id = o.id`,
+  );
+  return { total: row?.total ?? 0, embedded: row?.embedded ?? 0 };
 }
 
 function splitIntoChunks(text: string, maxSize: number): string[] {
