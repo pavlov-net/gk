@@ -24,14 +24,20 @@ async function main() {
   const config = loadConfig();
 
   if (command === "init") {
-    const dir = dirname(config.db_path);
-    if (dir && dir !== "." && !existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+    if (config.backend === "sqlite") {
+      const dir = dirname(config.db_path);
+      if (dir && dir !== "." && !existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
     }
     const backend = createBackend(config);
     await backend.initialize(config.embedding_dimensions);
     await backend.close();
-    console.log(`Initialized gk database at ${config.db_path}`);
+    const location =
+      config.backend === "dolt"
+        ? `${config.dolt_host}:${config.dolt_port}/${config.dolt_database}`
+        : config.db_path;
+    console.log(`Initialized gk database at ${location}`);
     return;
   }
 

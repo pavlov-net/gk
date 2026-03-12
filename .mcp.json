@@ -5,7 +5,8 @@
       "command": "bun",
       "args": ["run", "."],
       "env": {
-        "GK_DB_PATH": "./knowledge.db"
+        "GK_DB_PATH": "./knowledge.db",
+        "GK_OLLAMA_URL": "http://host.docker.internal:11434"
       }
     }
   }
