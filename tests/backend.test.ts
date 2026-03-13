@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { GraphDB } from "../src/backend";
+import { getEmbeddingCoverage } from "../src/observations";
 import { createTestDb } from "./helpers";
 
 describe("GraphDB", () => {
@@ -220,14 +221,14 @@ describe("vector storage", () => {
       ["obs1", "test content", new Date().toISOString()],
     );
 
-    const coverage = await db.getEmbeddingCoverage();
+    const coverage = await getEmbeddingCoverage(db);
     expect(coverage.total).toBe(1);
     expect(coverage.embedded).toBe(0);
 
     const vec = new Float32Array(768);
     await db.storeEmbeddings([{ id: "obs1", vector: vec }]);
 
-    const after = await db.getEmbeddingCoverage();
+    const after = await getEmbeddingCoverage(db);
     expect(after.embedded).toBe(1);
   });
 });

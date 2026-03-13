@@ -31,32 +31,36 @@ export async function addEntities(
       const confidence = input.confidence ?? 0.8;
       const tier = input.staleness_tier ?? "detail";
 
-      const upsertSql =
-        backend.dialect === "mysql"
-          ? `INSERT INTO entities (id, name, type, properties, confidence, staleness_tier, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE
-               properties = VALUES(properties),
-               confidence = VALUES(confidence),
-               staleness_tier = VALUES(staleness_tier),
-               updated_at = VALUES(updated_at)`
-          : `INSERT INTO entities (id, name, type, properties, confidence, staleness_tier, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(name, type) DO UPDATE SET
-               properties = excluded.properties,
-               confidence = excluded.confidence,
-               staleness_tier = excluded.staleness_tier,
-               updated_at = excluded.updated_at`;
-      await backend.run(upsertSql, [
-        id,
-        input.name,
-        input.type,
-        properties,
-        confidence,
-        tier,
-        ts,
-        ts,
-      ]);
+      await backend.upsert({
+        table: "entities",
+        columns: [
+          "id",
+          "name",
+          "type",
+          "properties",
+          "confidence",
+          "staleness_tier",
+          "created_at",
+          "updated_at",
+        ],
+        values: [
+          id,
+          input.name,
+          input.type,
+          properties,
+          confidence,
+          tier,
+          ts,
+          ts,
+        ],
+        conflictKeys: ["name", "type"],
+        updateColumns: [
+          "properties",
+          "confidence",
+          "staleness_tier",
+          "updated_at",
+        ],
+      });
     }
   });
 
@@ -307,27 +311,21 @@ export async function addRelationships(
         : "{}";
       const confidence = input.confidence ?? 0.8;
 
-      const upsertSql =
-        backend.dialect === "mysql"
-          ? `INSERT INTO relationships (id, from_entity, to_entity, type, properties, confidence, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE
-               properties = VALUES(properties),
-               confidence = VALUES(confidence)`
-          : `INSERT INTO relationships (id, from_entity, to_entity, type, properties, confidence, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(from_entity, to_entity, type) DO UPDATE SET
-               properties = excluded.properties,
-               confidence = excluded.confidence`;
-      await backend.run(upsertSql, [
-        id,
-        fromId,
-        toId,
-        input.type,
-        properties,
-        confidence,
-        ts,
-      ]);
+      await backend.upsert({
+        table: "relationships",
+        columns: [
+          "id",
+          "from_entity",
+          "to_entity",
+          "type",
+          "properties",
+          "confidence",
+          "created_at",
+        ],
+        values: [id, fromId, toId, input.type, properties, confidence, ts],
+        conflictKeys: ["from_entity", "to_entity", "type"],
+        updateColumns: ["properties", "confidence"],
+      });
     }
   });
 
@@ -1224,7 +1222,15 @@ export async function getStats(backend: Backend): Promise<{
   );
 
   // Embedding coverage
-  const embeddingCoverage = await backend.getEmbeddingCoverage();
+  const embeddingRow = await backend.get<{ total: number; embedded: number }>(
+    `SELECT COUNT(o.id) as total, COUNT(v.observation_id) as embedded
+     FROM observations o
+     LEFT JOIN observation_vectors v ON v.observation_id = o.id`,
+  );
+  const embeddingCoverage = {
+    total: embeddingRow?.total ?? 0,
+    embedded: embeddingRow?.embedded ?? 0,
+  };
 
   const entityCount = counts!.entity_count;
   const relCount = counts!.relationship_count;
