@@ -320,6 +320,7 @@ export class GraphDB implements Backend {
     if (this.sqlite) {
       sqliteVec.load(this.sqlite);
       this.sqlite.run("PRAGMA journal_mode = WAL");
+      this.sqlite.run("PRAGMA wal_checkpoint(TRUNCATE)");
       this.sqlite.run("PRAGMA foreign_keys = ON");
       this.sqlite.run("PRAGMA cache_size = -65536"); // 64MB
       this.sqlite.run("PRAGMA busy_timeout = 5000");
@@ -368,6 +369,7 @@ export class GraphDB implements Backend {
 
   async close(): Promise<void> {
     if (this.sqlite) {
+      this.sqlite.run("PRAGMA wal_checkpoint(TRUNCATE)");
       this.sqlite.close();
     } else if (this.mysql) {
       await this.mysql.end();

@@ -50,7 +50,20 @@ async function main() {
   );
   const mcpServer = createServer(backend, config, embedder);
   const transport = new StdioServerTransport();
+
   await mcpServer.connect(transport);
+
+  const shutdown = async () => {
+    try {
+      await mcpServer.close();
+      await backend.close();
+    } catch (e) {
+      console.error("Shutdown error:", e);
+    }
+    process.exit(0);
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }
 
 main().catch((err) => {
