@@ -11,13 +11,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.28.0",
-    "nanoid": "^6.0.0",
-    "sqlite-vec": "^0.1.7",
-    "zod": "^4.0.0"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "nanoid": "^6.0.1",
+    "sqlite-vec": "^0.1.9",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.9",
+    "@biomejs/biome": "2.5.12",
     "@types/bun": "1.4.1",
     "typescript": "^7.0.2"
   }
