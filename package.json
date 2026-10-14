@@ -14,7 +14,7 @@
     "@modelcontextprotocol/sdk": "^1.32.1",
     "nanoid": "^6.0.2",
     "sqlite-vec": "^0.1.9",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
