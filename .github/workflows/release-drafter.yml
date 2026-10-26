@@ -9,32 +9,36 @@ permissions:
   contents: write
   pull-requests: write
 
+# One run at a time, so a queued run sees the previous run's version-bump commit.
+concurrency:
+  group: release-drafter
+  cancel-in-progress: false
+
 jobs:
   release-drafter:
     name: Release Drafter
-    environment: release-drafter
     runs-on: ubuntu-latest
     steps:
       - uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
         id: drafter
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
 
-      - name: Update version in package.json
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Bump version
         env:
           VERSION: ${{ steps.drafter.outputs.resolved_version }}
         run: |
-          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" package.json
-
-      - name: Commit changes
-        env:
-          VERSION: ${{ steps.drafter.outputs.resolved_version }}
-        run: |
-          if ! git diff --quiet; then
-            git config --global user.name "github-actions[bot]"
-            git config --global user.email "github-actions[bot]@users.noreply.github.com"
-            git commit -am "Bump version to $VERSION"
+          bun pm version "$VERSION" --no-git-tag-version --allow-same-version
+          git add package.json
+          if ! git diff --cached --quiet; then
+            git -c user.name="github-actions[bot]" \
+                -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+                commit -m "Bump version to $VERSION [skip ci]"
             git push
           fi
